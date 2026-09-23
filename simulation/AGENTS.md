@@ -57,3 +57,14 @@ No modificar directamente la interfaz.
 No modificar directamente la estructura interna de espacios del parqueadero.
 
 Utilizar las funciones públicas proporcionadas por core/.
+
+## Contrato con core y UI
+
+La simulación utiliza únicamente la API pública de `core`, definida en el
+[contrato raíz](../AGENTS.md#9-integración). `main.py` compone Simulator,
+ParkingLot y la cola compartida; Simulator no administra espacios internos.
+Simulator publica `SIMULATION_STARTED` y `SIMULATION_FINISHED` en la cola.
+Los eventos del ciclo de vida de vehículos pertenecen a core.
+
+La configuración, incluida la capacidad del parqueadero, se centraliza en
+`config.py`. No importar ni modificar widgets de Tkinter.

@@ -43,6 +43,11 @@ Debe consultar periódicamente la cola:
 
 root.after(intervalo, process_events)
 
+La UI consume los `ParkingEvent` de la cola compartida, respetando los tipos
+del [contrato raíz](../AGENTS.md#4-contrato-entre-módulos). Puede consultar
+`ParkingLot.snapshot()` únicamente como lectura segura e inmutable; no debe
+alterar el estado del core ni controlar directamente sus hilos.
+
 
 ## Eventos
 

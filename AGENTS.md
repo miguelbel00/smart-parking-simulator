@@ -38,15 +38,11 @@ simulation/
 
 Los módulos deben mantenerse desacoplados.
 
-La dependencia general debe ser:
+La dirección de dependencias y eventos es:
 
-simulation
-    ↓
-core
-    ↓ eventos
-queue.Queue
-    ↓
-ui
+main.py compone `simulation`, `core`, `queue.Queue` y `ui`. `simulation`
+invoca únicamente la API pública de `core`. Core y Simulator publican sus
+eventos en la cola compartida, que consume la UI.
 
 La interfaz gráfica NO debe controlar directamente los hilos.
 
@@ -122,15 +118,18 @@ La comunicación entre los hilos y la interfaz debe realizarse mediante:
 
 queue.Queue
 
-Los eventos deben utilizar una estructura común.
+Los eventos usan el dataclass inmutable compartido `ParkingEvent`, definido
+en `core/events.py`:
 
-Ejemplo:
-
-{
-    "type": "VEHICLE_ENTERED",
-    "vehicle_id": 4,
-    "space_id": 2
-}
+```python
+ParkingEvent(
+    type: str,
+    timestamp: float,
+    vehicle_id: int | None = None,
+    space_id: int | None = None,
+    waiting_time: float | None = None,
+)
+```
 
 Tipos iniciales permitidos:
 
@@ -142,12 +141,9 @@ VEHICLE_FINISHED
 SIMULATION_STARTED
 SIMULATION_FINISHED
 
-Cuando corresponda, los eventos podrán incluir:
-
-vehicle_id
-space_id
-timestamp
-waiting_time
+Core es responsable de los eventos del ciclo de vida de vehículos.
+`Simulator` es responsable de `SIMULATION_STARTED` y
+`SIMULATION_FINISHED`. Los campos opcionales se informan cuando corresponda.
 
 No cambiar nombres de campos o tipos de eventos sin coordinarlo con
 los otros módulos.
@@ -172,8 +168,9 @@ Ejemplo conceptual:
 
 Semaphore(capacidad_del_parqueadero)
 
-Cuando no existan espacios disponibles, el hilo del vehículo debe quedar
-esperando hasta que se libere un recurso.
+Cuando no existan espacios disponibles, el hilo del vehículo espera por el
+Semaphore hasta que se libere un recurso. La admisión iniciada por el
+llamador no debe dormir ni bloquear esperando un espacio.
 
 ### Lock
 
@@ -314,14 +311,12 @@ main.py será el punto de composición de los módulos.
 
 Debe contener poca lógica.
 
-Ejemplo conceptual:
+`main.py` lee la capacidad desde `simulation/config.py` y compone la cola,
+`ParkingLot`, `Simulator` y la UI. Ejemplo conceptual:
 
 event_queue = Queue()
 
-parking = ParkingLot(
-    capacity=5,
-    event_queue=event_queue
-)
+parking = ParkingLot(capacity=PARKING_CAPACITY, event_queue=event_queue)
 
 simulator = Simulator(
     parking=parking
@@ -335,6 +330,27 @@ app = ParkingApp(
 app.run()
 
 La lógica específica debe permanecer en su módulo correspondiente.
+
+### API pública mínima de core
+
+- `Vehicle(Thread)` recibe `vehicle_id`, `parking` y `parking_duration`.
+  `ParkingLot` registra, admite e inicia el hilo; el vehículo coordina su
+  ciclo de vida mediante `ParkingLot`.
+- `ParkingLot(capacity: int, event_queue: Queue)` expone
+  `admit(vehicle: Vehicle) -> bool`, `snapshot() -> ParkingSnapshot` y
+  `close(wait: bool = True) -> None`.
+- `admit` devuelve `True` si el vehículo fue aceptado e iniciado, no si
+  obtuvo un espacio inmediatamente. La espera y los eventos correspondientes
+  ocurren dentro del vehículo.
+- `ParkingSnapshot` es una lectura inmutable/copiada con `capacity`,
+  `occupied_count`, `waiting_count` y `occupied_spaces`, una tupla de pares
+  `(space_id, vehicle_id)`. No expone estructuras mutables internas.
+- `close` rechaza nuevas admisiones, cancela vehículos que esperan y permite
+  terminar a los ya estacionados. Con `wait=True`, espera a que terminen los
+  hilos activos. No se terminan hilos a la fuerza; la política requiere
+  sincronización interna.
+- La UI consume eventos de la cola. Si lee un snapshot, lo hace solo como
+  consulta segura, nunca para alterar el estado del core.
 
 ---
 
