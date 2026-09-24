@@ -1,0 +1,60 @@
+schema: spec-driven
+
+context: |
+  Python smart parking simulator with a Tkinter UI.
+  Architecture separates core concurrency, simulation, and UI; main.py composes them.
+  Vehicle threads communicate with the UI through a shared queue of immutable ParkingEvent values.
+  Core owns admission, capacity, synchronization, and vehicle lifecycle.
+  Generated technical artifacts use English.
+  Downstream work pace: automatic. Delivery strategy: auto-chain.
+
+strict_tdd: false
+
+projects:
+  - path: .
+    stack: Python 3 / Tkinter (standard library)
+    test_command: "python -m pytest"
+    test_framework: pytest 8.3.4 (available in environment; no repository test configuration)
+    test_layers:
+      unit: pytest available; tests/ currently contains no tests
+      integration: not detected
+      e2e: not detected
+    coverage: not detected
+    quality_tools:
+      linter: not detected
+      type_checker: not detected
+      formatter: not detected
+
+testing:
+  strict_tdd: false
+  reason: No explicit workspace-level command covering all projects is configured; the available pytest invocation is project-local and no tests/configuration are currently present.
+  projects:
+    - path: .
+      test_command: "python -m pytest"
+      framework: "pytest 8.3.4 (available in environment; no repository test configuration)"
+      unit: "pytest available; tests/ currently contains no tests"
+      integration: "not detected"
+      e2e: "not detected"
+      coverage: "not detected"
+      linter: "not detected"
+      type_checker: "not detected"
+      formatter: "not detected"
+
+rules:
+  proposal:
+    - Keep changes within the user-approved scope and existing module boundaries.
+    - Include user impact and explicit out-of-scope items.
+  spec:
+    - State observable requirements and scenarios.
+    - Preserve the shared core API and event contract unless change is explicitly approved.
+  design:
+    - Keep Tkinter out of core and keep all UI updates on the main thread.
+    - Explain synchronization, shutdown, and race-safety decisions.
+  tasks:
+    - Break implementation and tests into reviewable tasks.
+  apply:
+    - Implement only approved tasks and verify with the detected project test command.
+  verify:
+    - Report executed checks and limitations honestly.
+  archive:
+    - Preserve change artifacts and sync only implemented behavior.
