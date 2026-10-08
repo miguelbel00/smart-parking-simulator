@@ -9,6 +9,9 @@ class RecordingWidget:
     def __init__(self) -> None:
         self.values: list[int] = []
         self.vehicles: list[int] = []
+        self.occupied_slots: list[tuple[int, int]] = []
+        self.freed_slots: list[int] = []
+        self.messages: list[str] = []
 
     def update_value(self, value: int) -> None:
         self.values.append(value)
@@ -22,13 +25,13 @@ class RecordingWidget:
             self.vehicles.remove(vehicle_id)
 
     def occupy_slot(self, space_id: int, vehicle_id: int) -> None:
-        pass
+        self.occupied_slots.append((space_id, vehicle_id))
 
     def free_slot(self, space_id: int) -> None:
-        pass
+        self.freed_slots.append(space_id)
 
     def log(self, *args: object) -> None:
-        pass
+        self.messages.append(str(args[1]))
 
 
 def make_app(capacity: int = 2) -> ParkingApp:
@@ -90,3 +93,21 @@ def test_occupancy_cards_share_projection_and_duplicate_events_are_idempotent() 
     dispatch(app, "VEHICLE_EXITED", 1, 1)
     assert (app.occupied_count, app.card_available.values[-1]) == (0, 2)
     assert app.card_occupied.values == [1, 0]
+
+
+def test_zero_based_core_space_maps_to_first_visible_slot_and_log_number() -> None:
+    app = make_app()
+
+    dispatch(app, "VEHICLE_ENTERED", 7, 0)
+
+    assert app._occupied_spaces == {0: 7}
+    assert app.parking_grid.occupied_slots == [(1, 7)]
+    assert "Espacio #1" in app.event_log.messages[-1]
+    assert "Espacio #0" not in app.event_log.messages[-1]
+
+    dispatch(app, "VEHICLE_EXITED", 7, 0)
+
+    assert app._occupied_spaces == {}
+    assert app.parking_grid.freed_slots == [1]
+    assert "Espacio #1" in app.event_log.messages[-1]
+    assert "Espacio #0" not in app.event_log.messages[-1]
