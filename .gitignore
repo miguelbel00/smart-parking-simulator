@@ -1,2 +1,5 @@
 .atl/.skill-registry.cache.json
 .atl/skill-registry.md
+__pycache__/
+*.py[cod]
+*$py.class
