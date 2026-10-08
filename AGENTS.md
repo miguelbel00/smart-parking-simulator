@@ -423,13 +423,25 @@ Si es necesario cambiar el contrato compartido:
 
 ## 13. Git
 
-Ramas principales de trabajo:
+Ramas de trabajo del equipo:
 
 feature/core
 feature/ui
 feature/simulation
 
 No desarrollar directamente sobre main.
+
+Usar `integration` como rama compartida de integración entre las ramas
+`feature/*` y `main`:
+
+1. Integrar las ramas de funcionalidad en `integration`.
+2. Verificar allí el comportamiento entre módulos y ejecutar las pruebas
+   acordadas.
+3. Promover `integration` a `main` solo cuando el proyecto integrado cumpla
+   los requisitos y las pruebas pasen.
+
+No promover ramas de funcionalidad directamente a `main`. Mantener `main`
+ejecutable y evitar acumular en `integration` cambios que no se hayan probado.
 
 Los cambios deben realizarse mediante commits pequeños y descriptivos.
 
@@ -477,3 +489,21 @@ Antes de generar o modificar código:
 
 No resolver problemas de concurrencia eliminando los Threads,
 Semaphore o Lock, ya que son parte fundamental del objetivo académico.
+
+---
+
+## 16. Database documentation requirements
+
+- Use SQLite as the local SQL database engine.
+- Include sample vehicle records so SQL queries can be demonstrated.
+- Persist one parking movement/visit record per parking session, including
+  its entry and exit times.
+- Keep sample seed records distinguishable from data created during a program
+  run; do not treat sample records as runtime-generated records.
+- Preserve the existing module boundaries: the UI must not perform database
+  work or control vehicle threads, and worker threads must not update Tkinter.
+- The database ownership, integration point, and synchronization approach are
+  not specified here. Agree on them before assigning persistence
+  responsibility or changing shared module contracts.
+- Keep this educational application simple and explainable. Do not add
+  unconfirmed database features, fields, migrations, or abstraction layers.

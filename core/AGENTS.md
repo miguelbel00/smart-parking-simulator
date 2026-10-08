@@ -33,3 +33,10 @@ contrato del [AGENTS.md raíz](../AGENTS.md#9-integración). En particular:
 
 No importar Tkinter ni depender de `ui/`. Publicar información para la
 interfaz mediante `event_queue.put(...)`; no modificar widgets.
+
+## Reglas compartidas
+
+Seguir los requisitos de base de datos y flujo Git del
+[AGENTS.md raíz](../AGENTS.md).
+La persistencia no está asignada a Core: no asumir propiedad, integración ni
+sincronización de la base de datos sin acuerdo del equipo.
