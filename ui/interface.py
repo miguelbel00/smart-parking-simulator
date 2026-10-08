@@ -54,6 +54,8 @@ class ParkingApp:
         self.occupied_count = 0
         self.waiting_count = 0
         self.total_finished = 0
+        self._waiting_vehicle_ids: set[int] = set()
+        self._occupied_spaces: dict[int, int] = {}
 
         # Initialize Main Window
         self.root = tk.Tk()
@@ -240,9 +242,11 @@ class ParkingApp:
         # 4. OS Concept: Vehicle thread blocked waiting for Semaphore (state: WAITING)
         elif event_type == "VEHICLE_WAITING":
             if vehicle_id is not None:
-                self.waiting_lane.add_vehicle(vehicle_id)
-            self.waiting_count += 1
-            self.card_waiting.update_value(self.waiting_count)
+                if vehicle_id not in self._waiting_vehicle_ids:
+                    self._waiting_vehicle_ids.add(vehicle_id)
+                    self.waiting_lane.add_vehicle(vehicle_id)
+                    self.waiting_count = len(self._waiting_vehicle_ids)
+                    self.card_waiting.update_value(self.waiting_count)
 
             wait_info = f" (espera inicial: {waiting_time:.2f}s)" if waiting_time is not None else ""
             msg = f"Auto #{vehicle_id} en espera de semáforo libre{wait_info}."
@@ -251,29 +255,30 @@ class ParkingApp:
         # 5. OS Concept: Thread acquired Semaphore and was assigned a slot (state: PARKED)
         elif event_type == "VEHICLE_ENTERED":
             if vehicle_id is not None:
-                self.waiting_lane.remove_vehicle(vehicle_id)
-            if self.waiting_count > 0:
-                self.waiting_count -= 1
-            self.card_waiting.update_value(self.waiting_count)
+                if vehicle_id in self._waiting_vehicle_ids:
+                    self._waiting_vehicle_ids.remove(vehicle_id)
+                    self.waiting_lane.remove_vehicle(vehicle_id)
+                    self.waiting_count = len(self._waiting_vehicle_ids)
+                    self.card_waiting.update_value(self.waiting_count)
 
             if space_id is not None and vehicle_id is not None:
-                self.parking_grid.occupy_slot(space_id, vehicle_id)
-                self.occupied_count += 1
-                available = max(0, self.capacity - self.occupied_count)
-                self.card_occupied.update_value(self.occupied_count)
-                self.card_available.update_value(available)
+                if self._occupied_spaces.get(space_id) != vehicle_id:
+                    self._occupied_spaces[space_id] = vehicle_id
+                    self.parking_grid.occupy_slot(space_id, vehicle_id)
+                    self._update_occupancy_cards()
 
             msg = f"Auto #{vehicle_id} obtuvo Semaphore e ingresó al Espacio #{space_id}."
             self.event_log.log(event_type, msg, time_str)
 
         # 6. OS Concept: Thread released slot resource and signaled Semaphore
         elif event_type == "VEHICLE_EXITED":
-            if space_id is not None:
+            if (
+                space_id in self._occupied_spaces
+                and (vehicle_id is None or self._occupied_spaces[space_id] == vehicle_id)
+            ):
+                del self._occupied_spaces[space_id]
                 self.parking_grid.free_slot(space_id)
-                self.occupied_count = max(0, self.occupied_count - 1)
-                available = max(0, self.capacity - self.occupied_count)
-                self.card_occupied.update_value(self.occupied_count)
-                self.card_available.update_value(available)
+                self._update_occupancy_cards()
 
             msg = f"Auto #{vehicle_id} liberó Espacio #{space_id} y señalizó Semaphore."
             self.event_log.log(event_type, msg, time_str)
@@ -288,6 +293,13 @@ class ParkingApp:
         else:
             msg = f"Vehículo #{vehicle_id}, Espacio #{space_id}."
             self.event_log.log(event_type, msg, time_str)
+
+    def _update_occupancy_cards(self) -> None:
+        """Update both capacity cards from the same occupied-space projection."""
+        self.occupied_count = len(self._occupied_spaces)
+        available = max(0, self.capacity - self.occupied_count)
+        self.card_occupied.update_value(self.occupied_count)
+        self.card_available.update_value(available)
 
     def _start_simulation(self) -> None:
         """Trigger simulator start if provided."""
