@@ -17,6 +17,7 @@ def main() -> None:
         event_queue=event_queue,
         simulator=simulator,
         capacity=PARKING_CAPACITY,
+        on_waiting_time=simulator.metrics.record_waiting_time,
     )
 
     try:
