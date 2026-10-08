@@ -262,25 +262,28 @@ class ParkingApp:
                     self.card_waiting.update_value(self.waiting_count)
 
             if space_id is not None and vehicle_id is not None:
+                display_space_id = space_id + 1
                 if self._occupied_spaces.get(space_id) != vehicle_id:
                     self._occupied_spaces[space_id] = vehicle_id
-                    self.parking_grid.occupy_slot(space_id, vehicle_id)
+                    self.parking_grid.occupy_slot(display_space_id, vehicle_id)
                     self._update_occupancy_cards()
 
-            msg = f"Auto #{vehicle_id} obtuvo Semaphore e ingresó al Espacio #{space_id}."
+            display_space_id = space_id + 1 if space_id is not None else None
+            msg = f"Auto #{vehicle_id} obtuvo Semaphore e ingresó al Espacio #{display_space_id}."
             self.event_log.log(event_type, msg, time_str)
 
         # 6. OS Concept: Thread released slot resource and signaled Semaphore
         elif event_type == "VEHICLE_EXITED":
+            display_space_id = space_id + 1 if space_id is not None else None
             if (
                 space_id in self._occupied_spaces
                 and (vehicle_id is None or self._occupied_spaces[space_id] == vehicle_id)
             ):
                 del self._occupied_spaces[space_id]
-                self.parking_grid.free_slot(space_id)
+                self.parking_grid.free_slot(display_space_id)
                 self._update_occupancy_cards()
 
-            msg = f"Auto #{vehicle_id} liberó Espacio #{space_id} y señalizó Semaphore."
+            msg = f"Auto #{vehicle_id} liberó Espacio #{display_space_id} y señalizó Semaphore."
             self.event_log.log(event_type, msg, time_str)
 
         # 7. OS Concept: Thread terminated execution (state: FINISHED)
