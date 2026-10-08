@@ -2,3 +2,4 @@
 .atl/skill-registry.md
 __pycache__/
 *.py[cod]
+*$py.class
