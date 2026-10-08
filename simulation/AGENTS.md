@@ -68,3 +68,10 @@ Los eventos del ciclo de vida de vehículos pertenecen a core.
 
 La configuración, incluida la capacidad del parqueadero, se centraliza en
 `config.py`. No importar ni modificar widgets de Tkinter.
+
+## Reglas compartidas
+
+Seguir los requisitos de base de datos y flujo Git del
+[AGENTS.md raíz](../AGENTS.md).
+La persistencia no está asignada a Simulation; no decidir su propiedad,
+integración ni sincronización sin acuerdo del equipo.

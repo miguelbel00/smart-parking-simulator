@@ -77,3 +77,10 @@ para alterar su estado.
 La UI representa el estado.
 
 El core determina el estado.
+
+## Reglas compartidas
+
+Seguir los requisitos de base de datos y flujo Git del
+[AGENTS.md raíz](../AGENTS.md).
+La UI no realiza operaciones de base de datos; la propiedad e integración de
+la persistencia deben acordarse antes de asignarlas a un módulo.
