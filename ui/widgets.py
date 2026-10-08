@@ -32,6 +32,18 @@ COLOR_WAITING_BG = "#78350f"      # Dark Amber background
 COLOR_INFO = "#38bdf8"            # Sky Blue: Simulation lifecycle events
 COLOR_INFO_BG = "#0c4a6e"
 COLOR_LOG_BG = "#050811"          # Deep terminal background for event log
+WAITING_PREVIEW_LIMIT = 5
+
+
+def waiting_queue_preview(vehicle_ids: Iterable[int], limit: int = WAITING_PREVIEW_LIMIT) -> str:
+    """Format a readable bounded preview without changing the source queue."""
+    ids = tuple(vehicle_ids)
+    visible_ids = ids[:limit]
+    preview = "  ·  ".join(f"#{vehicle_id}" for vehicle_id in visible_ids)
+    overflow = len(ids) - len(visible_ids)
+    if overflow:
+        preview += f"  ·  +{overflow} más"
+    return preview
 
 
 class StatCard(tk.Frame):
@@ -200,52 +212,95 @@ class ParkingSlotWidget(tk.Frame):
 
 
 class ParkingLotGridWidget(tk.Frame):
-    """Container grid organizing all parking slot widgets."""
+    """Compact two-bank schematic of parking spaces with a central aisle."""
+
+    SLOT_WIDTH = 54
+    ROW_HEIGHT = 34
+    BANK_GAP = 30
+    PADDING = 8
 
     def __init__(self, parent: tk.Widget, columns: int = 5, **kwargs) -> None:
         super().__init__(parent, bg=COLOR_BG_PRIMARY, **kwargs)
         self.columns = columns
-        self.slots: dict[int, ParkingSlotWidget] = {}
+        self.slots: dict[int, dict[str, int]] = {}
+        self.canvas = tk.Canvas(
+            self, bg=COLOR_BG_PRIMARY, highlightthickness=0,
+            yscrollincrement=self.ROW_HEIGHT,
+        )
+        scrollbar = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+    @classmethod
+    def slot_bounds(cls, space_id: int, columns: int = 5) -> tuple[int, int, int, int]:
+        """Return the rectangle for a one-based space in the two-bank layout."""
+        zero_based = space_id - 1
+        row, position = divmod(zero_based, columns * 2)
+        bank_column = position % columns
+        in_right_bank = position >= columns
+        x = cls.PADDING + bank_column * cls.SLOT_WIDTH
+        if in_right_bank:
+            x += columns * cls.SLOT_WIDTH + cls.BANK_GAP
+        y = cls.PADDING + row * cls.ROW_HEIGHT
+        return x, y, x + cls.SLOT_WIDTH - 4, y + cls.ROW_HEIGHT - 4
 
     def setup_slots(self, capacity: int) -> None:
         """Instantiate slot widgets based on configured parking capacity."""
-        for slot in self.slots.values():
-            slot.destroy()
+        self.canvas.delete("all")
         self.slots.clear()
 
         for index in range(1, capacity + 1):
-            row = (index - 1) // self.columns
-            col = (index - 1) % self.columns
-            slot_widget = ParkingSlotWidget(self, space_id=index)
-            slot_widget.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
-            self.slots[index] = slot_widget
+            bounds = self.slot_bounds(index, self.columns)
+            rect = self.canvas.create_rectangle(
+                *bounds, fill=COLOR_AVAILABLE_BG, outline=COLOR_AVAILABLE, width=1,
+            )
+            label = self.canvas.create_text(
+                bounds[0] + 4, bounds[1] + 5,
+                text=f"#{index}", fill=COLOR_AVAILABLE,
+                anchor="nw", font=("Segoe UI", 8, "bold"),
+            )
+            detail = self.canvas.create_text(
+                bounds[0] + 4, bounds[1] + 20,
+                text="LIBRE", fill=COLOR_AVAILABLE, anchor="nw",
+                font=("Segoe UI", 8),
+            )
+            self.slots[index] = {"rect": rect, "label": label, "detail": detail}
 
-        for col_idx in range(self.columns):
-            self.grid_columnconfigure(col_idx, weight=1)
+        rows = (capacity + self.columns * 2 - 1) // (self.columns * 2)
+        width = self.PADDING * 2 + self.columns * self.SLOT_WIDTH * 2 + self.BANK_GAP
+        height = self.PADDING * 2 + rows * self.ROW_HEIGHT
+        self.canvas.configure(scrollregion=(0, 0, width, height))
 
     def occupy_slot(self, space_id: int, vehicle_id: int) -> None:
         """Mark a specific slot as occupied."""
         if space_id in self.slots:
-            self.slots[space_id].set_occupied(vehicle_id)
+            slot = self.slots[space_id]
+            self.canvas.itemconfigure(slot["rect"], fill=COLOR_OCCUPIED_BG, outline=COLOR_OCCUPIED)
+            self.canvas.itemconfigure(slot["label"], fill=COLOR_OCCUPIED)
+            self.canvas.itemconfigure(slot["detail"], text=f"Auto #{vehicle_id}", fill=COLOR_OCCUPIED)
 
     def free_slot(self, space_id: int) -> None:
         """Mark a specific slot as free."""
         if space_id in self.slots:
-            self.slots[space_id].set_available()
+            slot = self.slots[space_id]
+            self.canvas.itemconfigure(slot["rect"], fill=COLOR_AVAILABLE_BG, outline=COLOR_AVAILABLE)
+            self.canvas.itemconfigure(slot["label"], fill=COLOR_AVAILABLE)
+            self.canvas.itemconfigure(slot["detail"], text="LIBRE", fill=COLOR_AVAILABLE)
 
     def sync_from_snapshot(self, occupied_spaces: Iterable[tuple[int, int]]) -> None:
-        """Synchronize slot states from an immutable ParkingSnapshot."""
-        occupied_dict = dict(occupied_spaces)
+        """Synchronize visible slots from Core's zero-based snapshot IDs."""
+        occupied_dict = {space_id + 1: vehicle_id for space_id, vehicle_id in occupied_spaces}
         for space_id, slot in self.slots.items():
             if space_id in occupied_dict:
-                slot.set_occupied(occupied_dict[space_id])
+                self.occupy_slot(space_id, occupied_dict[space_id])
             else:
-                slot.set_available()
+                self.free_slot(space_id)
 
     def reset(self) -> None:
         """Reset all slots to available."""
-        for slot in self.slots.values():
-            slot.reset()
+        for space_id in self.slots:
+            self.free_slot(space_id)
 
 
 class WaitingQueueWidget(tk.Frame):
@@ -323,7 +378,7 @@ class WaitingQueueWidget(tk.Frame):
         self._refresh()
 
     def _refresh(self) -> None:
-        """Re-render the waiting lane badges."""
+        """Render a bounded preview while retaining every queued vehicle ID."""
         count = len(self._vehicles)
         self._lbl_count.config(text=f"{count} vehículo{'s' if count != 1 else ''}")
 
@@ -341,34 +396,16 @@ class WaitingQueueWidget(tk.Frame):
             self._lbl_empty.pack(anchor="w", pady=4)
             return
 
-        # Render each waiting vehicle horizontally with arrows
-        for idx, vid in enumerate(self._vehicles):
-            item = tk.Frame(
-                self._items_container,
-                bg=COLOR_WAITING_BG,
-                highlightbackground=COLOR_WAITING,
-                highlightthickness=1,
-                padx=8,
-                pady=4,
-            )
-            item.pack(side="left", padx=(0, 6))
-
-            tk.Label(
-                item,
-                text=f"🚗 #{vid}",
-                bg=COLOR_WAITING_BG,
-                fg=COLOR_TEXT_PRIMARY,
-                font=("Segoe UI", 9, "bold"),
-            ).pack(side="left")
-
-            if idx < len(self._vehicles) - 1:
-                tk.Label(
-                    self._items_container,
-                    text="←",
-                    bg=COLOR_BG_CARD,
-                    fg=COLOR_WAITING,
-                    font=("Segoe UI", 11, "bold"),
-                ).pack(side="left", padx=(0, 6))
+        tk.Label(
+            self._items_container,
+            text=waiting_queue_preview(self._vehicles),
+            bg=COLOR_WAITING_BG,
+            fg=COLOR_TEXT_PRIMARY,
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            padx=8,
+            pady=4,
+        ).pack(fill="x")
 
 
 class EventLogWidget(tk.Frame):
