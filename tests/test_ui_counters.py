@@ -34,9 +34,10 @@ class RecordingWidget:
         self.messages.append(str(args[1]))
 
 
-def make_app(capacity: int = 2) -> ParkingApp:
+def make_app(capacity: int = 2, on_waiting_time=None) -> ParkingApp:
     app = object.__new__(ParkingApp)
     app.capacity = capacity
+    app.on_waiting_time = on_waiting_time
     app.occupied_count = 0
     app.waiting_count = 0
     app.total_finished = 0
@@ -51,13 +52,19 @@ def make_app(capacity: int = 2) -> ParkingApp:
     return app
 
 
-def dispatch(app: ParkingApp, event_type: str, vehicle_id: int, space_id: int | None = None) -> None:
+def dispatch(
+    app: ParkingApp,
+    event_type: str,
+    vehicle_id: int,
+    space_id: int | None = None,
+    waiting_time: float | None = None,
+) -> None:
     app._dispatch_event(SimpleNamespace(
         type=event_type,
         timestamp=0,
         vehicle_id=vehicle_id,
         space_id=space_id,
-        waiting_time=None,
+        waiting_time=waiting_time,
     ))
 
 
@@ -111,3 +118,15 @@ def test_zero_based_core_space_maps_to_first_visible_slot_and_log_number() -> No
     assert app.parking_grid.freed_slots == [1]
     assert "Espacio #1" in app.event_log.messages[-1]
     assert "Espacio #0" not in app.event_log.messages[-1]
+
+
+def test_waiting_time_callback_only_receives_entered_events_with_duration() -> None:
+    recorded = []
+    app = make_app(on_waiting_time=recorded.append)
+
+    dispatch(app, "VEHICLE_WAITING", 1, waiting_time=2.0)
+    dispatch(app, "VEHICLE_ENTERED", 1, 0)
+    dispatch(app, "VEHICLE_ENTERED", 2, 1, waiting_time=0.0)
+    dispatch(app, "VEHICLE_ENTERED", 3, 1, waiting_time=3.5)
+
+    assert recorded == [0.0, 3.5]

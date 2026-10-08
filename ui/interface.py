@@ -44,11 +44,13 @@ class ParkingApp:
         simulator: Any | None = None,
         capacity: int = 5,
         poll_interval_ms: int = 100,
+        on_waiting_time: Any | None = None,
     ) -> None:
         self.event_queue = event_queue
         self.simulator = simulator
         self.capacity = capacity
         self.poll_interval_ms = poll_interval_ms
+        self.on_waiting_time = on_waiting_time
 
         # UI metrics counters
         self.occupied_count = 0
@@ -254,6 +256,9 @@ class ParkingApp:
 
         # 5. OS Concept: Thread acquired Semaphore and was assigned a slot (state: PARKED)
         elif event_type == "VEHICLE_ENTERED":
+            if waiting_time is not None and self.on_waiting_time is not None:
+                self.on_waiting_time(waiting_time)
+
             if vehicle_id is not None:
                 if vehicle_id in self._waiting_vehicle_ids:
                     self._waiting_vehicle_ids.remove(vehicle_id)

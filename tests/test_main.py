@@ -11,6 +11,7 @@ def test_main_composes_modules_with_one_shared_queue(monkeypatch) -> None:
     queue = object()
     parking = Mock()
     simulator = Mock()
+    simulator.metrics.record_waiting_time = Mock()
     app = Mock()
     app.run.side_effect = RuntimeError("window closed")
     lifecycle = Mock()
@@ -37,6 +38,7 @@ def test_main_composes_modules_with_one_shared_queue(monkeypatch) -> None:
         event_queue=queue,
         simulator=simulator,
         capacity=main.PARKING_CAPACITY,
+        on_waiting_time=simulator.metrics.record_waiting_time,
     )
     app.run.assert_called_once_with()
     simulator.stop.assert_called_once_with()
