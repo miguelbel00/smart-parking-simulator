@@ -1,1 +1,8 @@
-"""Simulation configuration."""
+"""Default parameters for the parking simulation."""
+
+PARKING_CAPACITY = 5
+TOTAL_VEHICLES = 15
+MIN_ARRIVAL_TIME = 1.0
+MAX_ARRIVAL_TIME = 4.0
+MIN_PARKING_TIME = 3.0
+MAX_PARKING_TIME = 8.0
