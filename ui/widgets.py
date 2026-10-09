@@ -14,6 +14,8 @@ from __future__ import annotations
 import tkinter as tk
 from typing import Callable, Iterable
 
+from ui.projection import project_occupied_spaces
+
 
 # --- Color Palette (Dark Slate Theme) ---
 COLOR_BG_PRIMARY = "#0f172a"      # Slate 900: Main window background
@@ -223,22 +225,25 @@ class ParkingLotGridWidget(tk.Frame):
         for col_idx in range(self.columns):
             self.grid_columnconfigure(col_idx, weight=1)
 
-    def occupy_slot(self, space_id: int, vehicle_id: int) -> None:
-        """Mark a specific slot as occupied."""
-        if space_id in self.slots:
-            self.slots[space_id].set_occupied(vehicle_id)
+    def occupy_slot(self, slot_key: int, vehicle_id: int) -> None:
+        """Mark a projected, 1-based display slot as occupied."""
+        self.slots[slot_key].set_occupied(vehicle_id)
 
-    def free_slot(self, space_id: int) -> None:
-        """Mark a specific slot as free."""
-        if space_id in self.slots:
-            self.slots[space_id].set_available()
+    def free_slot(self, slot_key: int) -> None:
+        """Free a projected, 1-based display slot."""
+        self.slots[slot_key].set_available()
 
     def sync_from_snapshot(self, occupied_spaces: Iterable[tuple[int, int]]) -> None:
-        """Synchronize slot states from an immutable ParkingSnapshot."""
-        occupied_dict = dict(occupied_spaces)
-        for space_id, slot in self.slots.items():
-            if space_id in occupied_dict:
-                slot.set_occupied(occupied_dict[space_id])
+        """Translate raw core snapshot pairs once, then render display slots."""
+        self.render_occupied(project_occupied_spaces(occupied_spaces, len(self.slots)))
+
+    def render_occupied(self, occupied: dict[int, int]) -> None:
+        """Render already-projected keys, clearing slots absent from the mapping."""
+        if any(key not in self.slots for key in occupied):
+            raise ValueError("Projected slot is not present in the grid")
+        for key, slot in self.slots.items():
+            if key in occupied:
+                slot.set_occupied(occupied[key])
             else:
                 slot.set_available()
 
