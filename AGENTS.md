@@ -311,23 +311,39 @@ main.py será el punto de composición de los módulos.
 
 Debe contener poca lógica.
 
-`main.py` lee la capacidad desde `simulation/config.py` y compone la cola,
-`ParkingLot`, `Simulator` y la UI. Ejemplo conceptual:
+Tras proponer el cambio y revisar su impacto con los responsables de los
+tres módulos conforme a §12, se acordó que `main.py` lea la capacidad desde
+`simulation/config.py`, cree una sola cola para la UI y suministre a
+`Simulator` una fábrica de recursos nuevos para cada ejecución. Ejemplo
+conceptual:
 
-event_queue = Queue()
+ui_queue = Queue()
 
-parking = ParkingLot(capacity=PARKING_CAPACITY, event_queue=event_queue)
+def run_factory():
+    metrics = SimulationMetrics()
+    event_queue = MetricsForwardingQueue(destination=ui_queue, metrics=metrics)
+    parking = ParkingLot(capacity=PARKING_CAPACITY, event_queue=event_queue)
+    return parking, event_queue, metrics
 
-simulator = Simulator(
-    parking=parking
-)
+simulator = Simulator(run_factory=run_factory)
 
 app = ParkingApp(
-    event_queue=event_queue,
-    simulator=simulator
+    event_queue=ui_queue,
+    simulator=simulator,
+    capacity=PARKING_CAPACITY,
 )
 
 app.run()
+
+`Simulator` admite, detiene y cierra cada ejecución mediante la API pública
+de su propio `ParkingLot`; publica los eventos de inicio y fin en la cola
+reenviadora de esa ejecución. La fábrica crea un parqueadero y métricas
+independientes por ejecución; la UI solo consume la cola compartida y solicita
+inicio o detención a `Simulator`, sin administrar hilos ni recursos de core.
+El informe final corresponde únicamente a las métricas de la última ejecución.
+No se modifican las API públicas de core ni los tipos o campos de los eventos.
+Este acuerdo no asigna la persistencia SQLite: su propietario, punto de
+integración y sincronización siguen pendientes de decisión según §16.
 
 La lógica específica debe permanecer en su módulo correspondiente.
 
