@@ -61,6 +61,9 @@ def make_grid(capacity: int = 5) -> ParkingLotGridWidget:
 
 def make_app() -> ParkingApp:
     app = ParkingApp.__new__(ParkingApp)
+    app._closing = False
+    app._shutdown_complete = False
+    app._restart_polling = False
     app.capacity = 5
     app.projection = ParkingProjection(5)
     app.parking_grid = make_grid()

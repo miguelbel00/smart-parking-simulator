@@ -22,6 +22,7 @@ import tkinter as tk
 from typing import Any
 
 from core.parking import ParkingSnapshot
+from simulation import config
 from ui.projection import ParkingProjection
 from ui.widgets import (
     COLOR_AVAILABLE,
@@ -51,6 +52,10 @@ class ParkingApp:
         self.simulator = simulator
         self.capacity = capacity
         self.poll_interval_ms = poll_interval_ms
+        self._closing = False
+        self._shutdown_complete = False
+        self._restart_polling = False
+        self._close_started_at = 0.0
 
         # Run-local display state, independent of core's mutable internals.
         self.projection = ParkingProjection(capacity)
@@ -182,9 +187,10 @@ class ParkingApp:
         on the Main Thread, adhering to Tkinter's single-threaded GUI model.
         """
         self._process_events()
-        self.root.after(self.poll_interval_ms, self._schedule_poll)
+        if not self._shutdown_complete:
+            self.root.after(self.poll_interval_ms, self._schedule_poll)
 
-    def _process_events(self) -> None:
+    def _process_events(self) -> bool:
         """Drain all available events from the thread-safe queue.Queue.
 
         Acts as the consumer in the Producer-Consumer pattern.
@@ -195,9 +201,10 @@ class ParkingApp:
             except queue.Empty:
                 break
             except Exception:
-                break
+                return False
 
             self._dispatch_event(event)
+        return True
 
     def _dispatch_event(self, event: Any) -> None:
         """Dispatch a single ParkingEvent to update relevant visual components.
@@ -223,7 +230,8 @@ class ParkingApp:
             self.parking_grid.reset()
             self.waiting_lane.clear()
             self._update_display_counters()
-            self.control_bar.set_running()
+            if not self._closing:
+                self.control_bar.set_running()
             self.event_log.log(
                 event_type,
                 "Simulación iniciada. Productor de vehículos activo.",
@@ -232,7 +240,9 @@ class ParkingApp:
 
         # 2. Simulation Lifecycle: Finished
         elif event_type == "SIMULATION_FINISHED":
-            self.control_bar.set_stopped()
+            if not self._closing:
+                self.control_bar.set_pending("FINALIZANDO")
+                self._schedule_restart_check()
             self.event_log.log(
                 event_type,
                 f"Simulación terminada. Total vehículos atendidos: {self.total_finished}.",
@@ -304,9 +314,20 @@ class ParkingApp:
 
     def _start_simulation(self) -> None:
         """Trigger simulator start if provided."""
+        if self._closing:
+            return
         if self.simulator is not None:
             if hasattr(self.simulator, "start"):
-                self.simulator.start()
+                if self.simulator.start():
+                    self.control_bar.set_running()
+                else:
+                    self.control_bar.set_pending("INICIO RECHAZADO")
+                    self.event_log.log(
+                        "START_REFUSED",
+                        "Start refused: the previous run has not fully exited or drained.",
+                        datetime.now().strftime("%H:%M:%S"),
+                    )
+                    self._schedule_restart_check()
             elif hasattr(self.simulator, "run"):
                 self.simulator.run()
         else:
@@ -320,6 +341,8 @@ class ParkingApp:
 
     def _stop_simulation(self) -> None:
         """Trigger simulator stop if provided."""
+        if self._closing:
+            return
         if self.simulator is not None:
             if hasattr(self.simulator, "stop"):
                 self.simulator.stop()
@@ -333,9 +356,47 @@ class ParkingApp:
             )
 
     def _on_close(self) -> None:
-        """Clean shutdown when closing the Tkinter window."""
-        self._stop_simulation()
-        self.root.destroy()
+        """Request a stop once and let Tk continue processing while the run drains."""
+        if self._closing:
+            return
+        self._closing = True
+        self._close_started_at = time.monotonic()
+        self.control_bar.set_pending("CERRANDO: esperando vehículos")
+        if self.simulator is not None and self.simulator.is_active():
+            self.simulator.stop()
+        self._check_shutdown()
+
+    def _check_shutdown(self) -> None:
+        """Destroy only after the background thread and its lot have both drained."""
+        queue_drained = self._process_events()
+        if self.simulator is None or (
+            not self.simulator.is_active() and self.simulator.is_drained()
+        ):
+            if queue_drained:
+                self._shutdown_complete = True
+                self.root.destroy()
+                return
+            self.control_bar.set_pending("WARNING: event queue drain failed")
+        if time.monotonic() - self._close_started_at >= config.SHUTDOWN_DRAIN_WARNING_SECONDS:
+            self.control_bar.set_pending("WARNING: shutdown still waiting for drain")
+        self.root.after(config.SHUTDOWN_POLL_INTERVAL_MS, self._check_shutdown)
+
+    def _schedule_restart_check(self) -> None:
+        if not self._restart_polling and not self._closing:
+            self._restart_polling = True
+            self.root.after(config.SHUTDOWN_POLL_INTERVAL_MS, self._check_restart)
+
+    def _check_restart(self) -> None:
+        self._restart_polling = False
+        if self._closing:
+            return
+        if not self.simulator.is_active():
+            if self.simulator.is_drained():
+                self.control_bar.set_stopped()
+            else:
+                self.control_bar.set_pending("ERROR: shutdown did not drain")
+        else:
+            self._schedule_restart_check()
 
     def run(self) -> None:
         """Start the Tkinter main event loop."""
