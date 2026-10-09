@@ -14,6 +14,18 @@ ejecutan como hilos.
 - `main.py`: composición de los módulos y de la cola compartida; obtiene la
   capacidad desde `simulation/config.py`.
 
+## Instalación y ejecución
+
+Instala las dependencias y ejecuta la aplicación desde la raíz del proyecto:
+
+```bash
+python -m pip install -r requirements.txt
+python main.py
+```
+
+La interfaz está construida con CustomTkinter; el diagrama del parqueadero usa
+un Canvas de Tkinter para dibujar los puestos y la circulación.
+
 ## Contrato de integración
 
 Los detalles de la API mínima, los eventos y las reglas de concurrencia se

@@ -18,7 +18,7 @@ from __future__ import annotations
 import queue
 import time
 from datetime import datetime
-import tkinter as tk
+import customtkinter as ctk
 from typing import Any
 
 from ui.widgets import (
@@ -60,11 +60,13 @@ class ParkingApp:
         self._occupied_spaces: dict[int, int] = {}
 
         # Initialize Main Window
-        self.root = tk.Tk()
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+        self.root = ctk.CTk()
         self.root.title("Smart Parking Simulator — Monitor de Concurrencia")
         self.root.geometry("1100x740")
         self.root.minsize(900, 600)
-        self.root.configure(bg=COLOR_BG_PRIMARY)
+        self.root.configure(fg_color=COLOR_BG_PRIMARY)
 
         # Build UI layout
         self._build_ui()
@@ -86,23 +88,14 @@ class ParkingApp:
         self.control_bar.pack(fill="x", padx=16, pady=(16, 10))
 
         # 2. KPI Stat Cards Row (Displays Semaphore state and Counters)
-        stats_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
+        stats_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         stats_frame.pack(fill="x", padx=16, pady=(0, 12))
-
-        self.card_capacity = StatCard(
-            stats_frame,
-            title="Capacidad Total",
-            initial_value=str(self.capacity),
-            subtitle="Recursos Semaphore",
-            value_color=COLOR_TEXT_PRIMARY,
-        )
-        self.card_capacity.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
         self.card_occupied = StatCard(
             stats_frame,
             title="Espacios Ocupados",
             initial_value="0",
-            subtitle="Semáforo consumido",
+            subtitle="Vehículos estacionados",
             value_color=COLOR_OCCUPIED,
         )
         self.card_occupied.pack(side="left", fill="both", expand=True, padx=(0, 8))
@@ -111,7 +104,7 @@ class ParkingApp:
             stats_frame,
             title="Espacios Disponibles",
             initial_value=str(self.capacity),
-            subtitle="Recursos libres",
+            subtitle="Puestos libres",
             value_color=COLOR_AVAILABLE,
         )
         self.card_available.pack(side="left", fill="both", expand=True, padx=(0, 8))
@@ -120,31 +113,45 @@ class ParkingApp:
             stats_frame,
             title="Cola de Espera",
             initial_value="0",
-            subtitle="Hilos bloqueados",
+            subtitle="Hilos bloqueados por capacidad",
             value_color=COLOR_WAITING,
         )
         self.card_waiting.pack(side="left", fill="both", expand=True)
 
         # 3. Main Center Area (Split Left / Right)
-        center_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
+        center_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         center_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
 
         # Left Column: Parking Bay Grid + Waiting Queue Lane
-        left_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY)
+        left_col = ctk.CTkFrame(center_frame, fg_color="transparent")
         left_col.pack(side="left", fill="both", expand=True, padx=(0, 10))
+
+        ctk.CTkLabel(left_col, text="Mapa del parqueadero", text_color=COLOR_TEXT_PRIMARY,
+                     font=("Roboto", 18, "bold"), anchor="w").pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(left_col, text=f"{self.capacity} espacios · vista en tiempo real",
+                     text_color="#94a3b8", font=("Roboto", 12), anchor="w").pack(fill="x", pady=(0, 8))
 
         # Visual Grid of Parking Slots
         self.parking_grid = ParkingLotGridWidget(left_col, columns=5)
         self.parking_grid.pack(fill="both", expand=True, pady=(0, 10))
         self.parking_grid.setup_slots(self.capacity)
 
+        legend = ctk.CTkFrame(left_col, fg_color="transparent")
+        legend.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(legend, text="Disponible", text_color=COLOR_AVAILABLE,
+                     font=("Roboto", 12, "bold")).pack(side="left", padx=(4, 16))
+        ctk.CTkLabel(legend, text="Ocupado", text_color=COLOR_OCCUPIED,
+                     font=("Roboto", 12, "bold")).pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(legend, text="En espera", text_color=COLOR_WAITING,
+                     font=("Roboto", 12, "bold")).pack(side="left")
+
         # Visual Waiting Queue Lane
         self.waiting_lane = WaitingQueueWidget(left_col)
         self.waiting_lane.pack(fill="x")
 
         # Right Column: Live Event Log Terminal
-        right_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY, width=420)
-        right_col.pack(side="right", fill="both", expand=False)
+        right_col = ctk.CTkFrame(center_frame, fg_color="transparent", width=320)
+        right_col.pack(side="right", fill="both", expand=False, padx=(10, 0))
         right_col.pack_propagate(False)
 
         self.event_log = EventLogWidget(right_col)
@@ -155,24 +162,22 @@ class ParkingApp:
 
     def _build_footer(self) -> None:
         """Construct the bottom status bar displaying OS concepts."""
-        footer_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY, padx=16, pady=4)
+        footer_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         footer_frame.pack(fill="x", side="bottom")
 
-        lbl_os_info = tk.Label(
+        lbl_os_info = ctk.CTkLabel(
             footer_frame,
-            text="SO Concept: Semaphore (Capacidad) | Mutex Lock (Asignación) | Queue (Hilos -> UI)",
-            bg=COLOR_BG_PRIMARY,
-            fg="#64748b",
-            font=("Segoe UI", 8),
+            text="Conceptos SO: semáforo (capacidad), lock (asignación), cola de eventos (hilos a interfaz)",
+            text_color="#64748b",
+            font=("Roboto", 12),
         )
         lbl_os_info.pack(side="left")
 
-        self._lbl_poll_info = tk.Label(
+        self._lbl_poll_info = ctk.CTkLabel(
             footer_frame,
             text=f"Refresco: after({self.poll_interval_ms}ms) | Hilo Tkinter: Main",
-            bg=COLOR_BG_PRIMARY,
-            fg="#64748b",
-            font=("Segoe UI", 8),
+            text_color="#64748b",
+            font=("Roboto", 12),
         )
         self._lbl_poll_info.pack(side="right")
 
