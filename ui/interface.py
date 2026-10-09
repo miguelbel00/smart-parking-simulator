@@ -21,6 +21,8 @@ from datetime import datetime
 import tkinter as tk
 from typing import Any
 
+from core.parking import ParkingSnapshot
+from ui.projection import ParkingProjection
 from ui.widgets import (
     COLOR_AVAILABLE,
     COLOR_BG_PRIMARY,
@@ -50,7 +52,8 @@ class ParkingApp:
         self.capacity = capacity
         self.poll_interval_ms = poll_interval_ms
 
-        # UI metrics counters
+        # Run-local display state, independent of core's mutable internals.
+        self.projection = ParkingProjection(capacity)
         self.occupied_count = 0
         self.waiting_count = 0
         self.total_finished = 0
@@ -213,9 +216,13 @@ class ParkingApp:
         waiting_time = getattr(event, "waiting_time", None)
 
         time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+        slot_key = self.projection.apply_event(event)
 
         # 1. Simulation Lifecycle: Started
         if event_type == "SIMULATION_STARTED":
+            self.parking_grid.reset()
+            self.waiting_lane.clear()
+            self._update_display_counters()
             self.control_bar.set_running()
             self.event_log.log(
                 event_type,
@@ -241,8 +248,7 @@ class ParkingApp:
         elif event_type == "VEHICLE_WAITING":
             if vehicle_id is not None:
                 self.waiting_lane.add_vehicle(vehicle_id)
-            self.waiting_count += 1
-            self.card_waiting.update_value(self.waiting_count)
+            self._update_display_counters()
 
             wait_info = f" (espera inicial: {waiting_time:.2f}s)" if waiting_time is not None else ""
             msg = f"Auto #{vehicle_id} en espera de semáforo libre{wait_info}."
@@ -252,35 +258,27 @@ class ParkingApp:
         elif event_type == "VEHICLE_ENTERED":
             if vehicle_id is not None:
                 self.waiting_lane.remove_vehicle(vehicle_id)
-            if self.waiting_count > 0:
-                self.waiting_count -= 1
-            self.card_waiting.update_value(self.waiting_count)
+            if slot_key is not None and vehicle_id is not None:
+                self.parking_grid.occupy_slot(slot_key, vehicle_id)
+            self._update_display_counters()
 
-            if space_id is not None and vehicle_id is not None:
-                self.parking_grid.occupy_slot(space_id, vehicle_id)
-                self.occupied_count += 1
-                available = max(0, self.capacity - self.occupied_count)
-                self.card_occupied.update_value(self.occupied_count)
-                self.card_available.update_value(available)
-
-            msg = f"Auto #{vehicle_id} obtuvo Semaphore e ingresó al Espacio #{space_id}."
+            msg = f"Auto #{vehicle_id} obtuvo Semaphore e ingresó al Espacio #{slot_key}."
             self.event_log.log(event_type, msg, time_str)
 
         # 6. OS Concept: Thread released slot resource and signaled Semaphore
         elif event_type == "VEHICLE_EXITED":
-            if space_id is not None:
-                self.parking_grid.free_slot(space_id)
-                self.occupied_count = max(0, self.occupied_count - 1)
-                available = max(0, self.capacity - self.occupied_count)
-                self.card_occupied.update_value(self.occupied_count)
-                self.card_available.update_value(available)
+            if slot_key is not None:
+                self.parking_grid.free_slot(slot_key)
+            self._update_display_counters()
 
-            msg = f"Auto #{vehicle_id} liberó Espacio #{space_id} y señalizó Semaphore."
+            msg = f"Auto #{vehicle_id} liberó Espacio #{slot_key} y señalizó Semaphore."
             self.event_log.log(event_type, msg, time_str)
 
         # 7. OS Concept: Thread terminated execution (state: FINISHED)
         elif event_type == "VEHICLE_FINISHED":
-            self.total_finished += 1
+            if vehicle_id is not None:
+                self.waiting_lane.remove_vehicle(vehicle_id)
+            self._update_display_counters()
             msg = f"Hilo de Auto #{vehicle_id} finalizó su ciclo de vida."
             self.event_log.log(event_type, msg, time_str)
 
@@ -288,6 +286,21 @@ class ParkingApp:
         else:
             msg = f"Vehículo #{vehicle_id}, Espacio #{space_id}."
             self.event_log.log(event_type, msg, time_str)
+
+    def _update_display_counters(self) -> None:
+        """Keep cards synchronized with the projected grid and waiting IDs."""
+        self.occupied_count = self.projection.occupied_count
+        self.waiting_count = len(self.projection.waiting)
+        self.total_finished = self.projection.finished_count
+        self.card_occupied.update_value(self.occupied_count)
+        self.card_available.update_value(self.projection.available_count)
+        self.card_waiting.update_value(self.waiting_count)
+
+    def _reconcile_snapshot(self, snapshot: ParkingSnapshot) -> None:
+        """Refresh displayed occupancy from a safe core snapshot when supplied."""
+        self.projection.reconcile_snapshot(snapshot)
+        self.parking_grid.render_occupied(self.projection.occupied)
+        self._update_display_counters()
 
     def _start_simulation(self) -> None:
         """Trigger simulator start if provided."""
@@ -361,7 +374,7 @@ if __name__ == "__main__":
         demo_queue.put(MockParkingEvent(type="SIMULATION_STARTED", timestamp=time.time()))
         time.sleep(0.5)
 
-        # Vehicles arrive: slots 1 to 5 enter immediately; slot 6 and 7 wait
+        # Vehicles arrive: core spaces 0 to 4 fill; vehicles 6 and 7 wait.
         for i in range(1, 8):
             demo_queue.put(
                 MockParkingEvent(type="VEHICLE_CREATED", timestamp=time.time(), vehicle_id=i)
@@ -369,13 +382,13 @@ if __name__ == "__main__":
             time.sleep(0.3)
 
             if i <= 5:
-                # Capacity available: vehicle enters slot i
+                # Capacity available: core assigns zero-based space i - 1.
                 demo_queue.put(
                     MockParkingEvent(
                         type="VEHICLE_ENTERED",
                         timestamp=time.time(),
                         vehicle_id=i,
-                        space_id=i,
+                        space_id=i - 1,
                         waiting_time=0.0,
                     )
                 )
@@ -398,7 +411,7 @@ if __name__ == "__main__":
                 type="VEHICLE_EXITED",
                 timestamp=time.time(),
                 vehicle_id=1,
-                space_id=1,
+                space_id=0,
             )
         )
         demo_queue.put(
@@ -410,13 +423,13 @@ if __name__ == "__main__":
         )
         time.sleep(0.5)
 
-        # Vehicle 6 waiting gets the released slot 1
+        # Vehicle 6 waiting gets the released core space 0.
         demo_queue.put(
             MockParkingEvent(
                 type="VEHICLE_ENTERED",
                 timestamp=time.time(),
                 vehicle_id=6,
-                space_id=1,
+                space_id=0,
                 waiting_time=3.2,
             )
         )
