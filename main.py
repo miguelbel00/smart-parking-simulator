@@ -12,11 +12,14 @@ from ui.interface import ParkingApp
 def main() -> None:
     """Compose the modules and run the parking simulator."""
     ui_queue: Queue = Queue()
-    metrics = SimulationMetrics()
-    event_queue = MetricsForwardingQueue(destination=ui_queue, metrics=metrics)
 
-    parking = ParkingLot(capacity=config.PARKING_CAPACITY, event_queue=event_queue)
-    simulator = Simulator(parking=parking, event_queue=event_queue, metrics=metrics)
+    def run_factory() -> tuple[ParkingLot, MetricsForwardingQueue, SimulationMetrics]:
+        metrics = SimulationMetrics()
+        event_queue = MetricsForwardingQueue(destination=ui_queue, metrics=metrics)
+        parking = ParkingLot(capacity=config.PARKING_CAPACITY, event_queue=event_queue)
+        return parking, event_queue, metrics
+
+    simulator = Simulator(run_factory=run_factory)
 
     app = ParkingApp(
         event_queue=ui_queue,
@@ -25,7 +28,8 @@ def main() -> None:
     )
     app.run()
 
-    print(metrics.report())
+    if simulator.metrics is not None:
+        print(simulator.metrics.report())
 
 
 if __name__ == "__main__":
