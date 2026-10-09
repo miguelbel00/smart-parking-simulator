@@ -596,3 +596,9 @@ class ControlBarWidget(tk.Frame):
         )
         self._btn_start.config(state="normal")
         self._btn_stop.config(state="disabled")
+
+    def set_pending(self, message: str) -> None:
+        """Keep both run controls unavailable during a lifecycle transition."""
+        self._lbl_status.config(text=message, bg=COLOR_BORDER, fg=COLOR_INFO)
+        self._btn_start.config(state="disabled")
+        self._btn_stop.config(state="disabled")
