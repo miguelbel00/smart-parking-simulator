@@ -97,10 +97,24 @@ class Simulator:
                         metrics.record_admitted()
                     else:
                         metrics.record_rejected()
+            else:
+                self._wait_for_admitted_vehicles(metrics, stop_requested)
         finally:
             # Join only on the background thread. Workers publish terminal
             # events before the final lifecycle event reaches the UI queue.
+            # If stop was requested, close cancels waiters; on natural
+            # completion they have already finished and close only joins them.
             parking.close(wait=True)
             with self._state_lock:
                 self._drained = True
             event_queue.put(ParkingEvent(type=SIMULATION_FINISHED, timestamp=time()))
+
+    @staticmethod
+    def _wait_for_admitted_vehicles(metrics: SimulationMetrics,
+                                    stop_requested: Event) -> None:
+        """Wait for normal completion without blocking Tk or holding state locks."""
+        while not stop_requested.is_set():
+            stats = metrics.snapshot()
+            if stats["total_finished"] >= stats["total_admitted"]:
+                return
+            stop_requested.wait(config.SIMULATION_DRAIN_POLL_INTERVAL_SECONDS)

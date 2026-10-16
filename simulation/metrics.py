@@ -32,6 +32,9 @@ class SimulationMetrics:
         self._admitted = 0
         self._rejected = 0
         self._finished = 0
+        self._parked = 0
+        self._cancelled = 0
+        self._entered_vehicle_ids: set[int] = set()
         self._waiting_times: list[float] = []
         self._parking_started_at: dict[int, float] = {}
         self._parking_durations: list[float] = []
@@ -65,6 +68,8 @@ class SimulationMetrics:
                 if event.waiting_time is not None:
                     self._waiting_times.append(event.waiting_time)
                 if event.vehicle_id is not None:
+                    self._parked += 1
+                    self._entered_vehicle_ids.add(event.vehicle_id)
                     self._currently_waiting.discard(event.vehicle_id)
                     self._parking_started_at[event.vehicle_id] = event.timestamp
                     self._currently_parked.add(event.vehicle_id)
@@ -76,6 +81,9 @@ class SimulationMetrics:
                     self._parking_durations.append(event.timestamp - started_at)
             elif event.type == VEHICLE_FINISHED:
                 self._finished += 1
+                if (event.vehicle_id is not None
+                        and event.vehicle_id not in self._entered_vehicle_ids):
+                    self._cancelled += 1
                 self._currently_waiting.discard(event.vehicle_id)
             elif event.type == SIMULATION_STARTED:
                 self._started_at = event.timestamp
@@ -94,7 +102,10 @@ class SimulationMetrics:
                 "total_generated": self._generated,
                 "total_admitted": self._admitted,
                 "total_rejected": self._rejected,
+                "total_parked": self._parked,
                 "total_finished": self._finished,
+                "total_cancelled": self._cancelled,
+                "currently_parked": len(self._currently_parked),
                 "average_waiting_time": _average(self._waiting_times),
                 "average_parking_time": _average(self._parking_durations),
                 "peak_waiting": self._peak_waiting,
@@ -112,7 +123,9 @@ class SimulationMetrics:
             f"Vehículos generados:                {stats['total_generated']}\n"
             f"Vehículos admitidos:                 {stats['total_admitted']}\n"
             f"Vehículos rechazados:                {stats['total_rejected']}\n"
+            f"Vehículos estacionados:               {stats['total_parked']}\n"
             f"Vehículos que finalizaron su ciclo:  {stats['total_finished']}\n"
+            f"Vehículos cancelados:                 {stats['total_cancelled']}\n"
             f"Tiempo de espera promedio:           {stats['average_waiting_time']:.2f}s\n"
             f"Tiempo de estacionamiento promedio:  {stats['average_parking_time']:.2f}s\n"
             f"Máximo de vehículos en espera:        {stats['peak_waiting']}\n"
