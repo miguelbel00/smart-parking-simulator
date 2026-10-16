@@ -23,6 +23,7 @@ from typing import Any
 
 from core.parking import ParkingSnapshot
 from simulation import config
+from ui.fonts import font_family
 from ui.projection import ParkingProjection
 from ui.widgets import (
     COLOR_AVAILABLE,
@@ -167,7 +168,7 @@ class ParkingApp:
             text="SO Concept: Semaphore (Capacidad) | Mutex Lock (Asignación) | Queue (Hilos -> UI)",
             bg=COLOR_BG_PRIMARY,
             fg="#64748b",
-            font=("Segoe UI", 8),
+            font=(font_family(self.root), 8),
         )
         lbl_os_info.pack(side="left")
 
@@ -176,7 +177,7 @@ class ParkingApp:
             text=f"Refresco: after({self.poll_interval_ms}ms) | Hilo Tkinter: Main",
             bg=COLOR_BG_PRIMARY,
             fg="#64748b",
-            font=("Segoe UI", 8),
+            font=(font_family(self.root), 8),
         )
         self._lbl_poll_info.pack(side="right")
 
