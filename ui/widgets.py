@@ -14,6 +14,7 @@ from __future__ import annotations
 import tkinter as tk
 from typing import Callable, Iterable
 
+from ui.fonts import font_family
 from ui.projection import project_occupied_spaces
 
 
@@ -69,7 +70,7 @@ class StatCard(tk.Frame):
             text=title.upper(),
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
             anchor="w",
         )
         self._lbl_title.pack(fill="x")
@@ -80,7 +81,7 @@ class StatCard(tk.Frame):
             text=initial_value,
             bg=COLOR_BG_CARD,
             fg=self.value_color,
-            font=("Segoe UI", 22, "bold"),
+            font=(font_family(self), 22, "bold"),
             anchor="w",
         )
         self._lbl_value.pack(fill="x", pady=(2, 0))
@@ -91,7 +92,7 @@ class StatCard(tk.Frame):
             text=subtitle,
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
-            font=("Segoe UI", 8),
+            font=(font_family(self), 8),
             anchor="w",
         )
         if subtitle:
@@ -130,7 +131,7 @@ class ParkingSlotWidget(tk.Frame):
             text=f"Espacio #{space_id}",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
         )
         self._lbl_id.pack(anchor="center")
 
@@ -140,7 +141,7 @@ class ParkingSlotWidget(tk.Frame):
             text="🅿️",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_PRIMARY,
-            font=("Segoe UI", 24),
+            font=(font_family(self), 24),
         )
         self._lbl_icon.pack(anchor="center", pady=(4, 2))
 
@@ -150,7 +151,7 @@ class ParkingSlotWidget(tk.Frame):
             text="DISPONIBLE",
             bg=COLOR_AVAILABLE_BG,
             fg=COLOR_AVAILABLE,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
             padx=8,
             pady=2,
         )
@@ -162,7 +163,7 @@ class ParkingSlotWidget(tk.Frame):
             text="Libre",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
-            font=("Segoe UI", 8),
+            font=(font_family(self), 8),
         )
         self._lbl_detail.pack(anchor="center", pady=(2, 0))
 
@@ -281,7 +282,7 @@ class WaitingQueueWidget(tk.Frame):
             text="COLA DE ESPERA (Hilos bloqueados esperando Semaphore)",
             bg=COLOR_BG_CARD,
             fg=COLOR_WAITING,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
             anchor="w",
         )
         lbl_title.pack(side="left")
@@ -291,7 +292,7 @@ class WaitingQueueWidget(tk.Frame):
             text="0 vehículos",
             bg=COLOR_WAITING_BG,
             fg=COLOR_WAITING,
-            font=("Segoe UI", 8, "bold"),
+            font=(font_family(self), 8, "bold"),
             padx=6,
             pady=1,
         )
@@ -306,7 +307,7 @@ class WaitingQueueWidget(tk.Frame):
             text="No hay vehículos en espera. Todos los hilos tienen recurso asignado.",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
-            font=("Segoe UI", 9, "italic"),
+            font=(font_family(self), 9, "italic"),
         )
         self._lbl_empty.pack(anchor="w", pady=4)
 
@@ -341,7 +342,7 @@ class WaitingQueueWidget(tk.Frame):
                 text="No hay vehículos en espera. Todos los hilos tienen recurso asignado.",
                 bg=COLOR_BG_CARD,
                 fg=COLOR_TEXT_MUTED,
-                font=("Segoe UI", 9, "italic"),
+                font=(font_family(self), 9, "italic"),
             )
             self._lbl_empty.pack(anchor="w", pady=4)
             return
@@ -363,7 +364,7 @@ class WaitingQueueWidget(tk.Frame):
                 text=f"🚗 #{vid}",
                 bg=COLOR_WAITING_BG,
                 fg=COLOR_TEXT_PRIMARY,
-                font=("Segoe UI", 9, "bold"),
+                font=(font_family(self), 9, "bold"),
             ).pack(side="left")
 
             if idx < len(self._vehicles) - 1:
@@ -372,7 +373,7 @@ class WaitingQueueWidget(tk.Frame):
                     text="←",
                     bg=COLOR_BG_CARD,
                     fg=COLOR_WAITING,
-                    font=("Segoe UI", 11, "bold"),
+                    font=(font_family(self), 11, "bold"),
                 ).pack(side="left", padx=(0, 6))
 
 
@@ -403,7 +404,7 @@ class EventLogWidget(tk.Frame):
             text="REGISTRO DE EVENTOS (queue.Queue)",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_PRIMARY,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
         ).pack(side="left")
 
         btn_clear = tk.Button(
@@ -413,7 +414,7 @@ class EventLogWidget(tk.Frame):
             fg=COLOR_TEXT_PRIMARY,
             activebackground=COLOR_BG_PRIMARY,
             activeforeground=COLOR_TEXT_PRIMARY,
-            font=("Segoe UI", 8),
+            font=(font_family(self), 8),
             relief="flat",
             padx=8,
             pady=2,
@@ -434,7 +435,7 @@ class EventLogWidget(tk.Frame):
             bg=COLOR_LOG_BG,
             fg=COLOR_TEXT_PRIMARY,
             insertbackground=COLOR_TEXT_PRIMARY,
-            font=("Consolas", 9),
+            font=(font_family(self, fixed=True), 9),
             wrap="word",
             state="disabled",
             yscrollcommand=self._scrollbar.set,
@@ -452,7 +453,9 @@ class EventLogWidget(tk.Frame):
         self._text.tag_config("ENTERED", foreground=COLOR_AVAILABLE)
         self._text.tag_config("EXITED", foreground="#c084fc")
         self._text.tag_config("FINISHED", foreground=COLOR_INFO)
-        self._text.tag_config("SYSTEM", foreground="#38bdf8", font=("Consolas", 9, "bold"))
+        self._text.tag_config(
+            "SYSTEM", foreground="#38bdf8", font=(font_family(self, fixed=True), 9, "bold")
+        )
         self._text.tag_config("MSG", foreground=COLOR_TEXT_PRIMARY)
 
     def log(self, event_type: str, message: str, timestamp_str: str) -> None:
@@ -507,7 +510,7 @@ class ControlBarWidget(tk.Frame):
             text="Smart Parking Simulator",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_PRIMARY,
-            font=("Segoe UI", 14, "bold"),
+            font=(font_family(self), 14, "bold"),
         ).pack(anchor="w")
 
         tk.Label(
@@ -515,7 +518,7 @@ class ControlBarWidget(tk.Frame):
             text="Monitor de Concurrencia y Sincronización (SO)",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
-            font=("Segoe UI", 9),
+            font=(font_family(self), 9),
         ).pack(anchor="w")
 
         # Action Buttons on the right
@@ -528,7 +531,7 @@ class ControlBarWidget(tk.Frame):
             text="DETENIDO",
             bg=COLOR_BORDER,
             fg=COLOR_TEXT_MUTED,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
             padx=10,
             pady=4,
         )
@@ -542,7 +545,7 @@ class ControlBarWidget(tk.Frame):
             fg=COLOR_AVAILABLE,
             activebackground=COLOR_AVAILABLE,
             activeforeground=COLOR_BG_PRIMARY,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
             relief="flat",
             padx=12,
             pady=6,
@@ -559,7 +562,7 @@ class ControlBarWidget(tk.Frame):
             fg=COLOR_OCCUPIED,
             activebackground=COLOR_OCCUPIED,
             activeforeground=COLOR_BG_PRIMARY,
-            font=("Segoe UI", 9, "bold"),
+            font=(font_family(self), 9, "bold"),
             relief="flat",
             padx=12,
             pady=6,
@@ -595,4 +598,10 @@ class ControlBarWidget(tk.Frame):
             fg=COLOR_INFO,
         )
         self._btn_start.config(state="normal")
+        self._btn_stop.config(state="disabled")
+
+    def set_pending(self, message: str) -> None:
+        """Keep both run controls unavailable during a lifecycle transition."""
+        self._lbl_status.config(text=message, bg=COLOR_BORDER, fg=COLOR_INFO)
+        self._btn_start.config(state="disabled")
         self._btn_stop.config(state="disabled")
