@@ -1,5 +1,18 @@
 # UI Agent Instructions
 
+## Implementación actual y objetivo aprobado
+
+El runtime actual usa un `Vehicle` por hilo; esta es una descripción factual,
+no una instrucción para desarrollo nuevo. La migración está pendiente y no
+está implementada. No agregar desarrollo que dependa de un hilo por vehículo
+ni colocar allí la espera de admisión. El objetivo usa hilos orientados a
+tareas, FIFO por elegibilidad y FIFO estricto entre solicitudes del mismo
+puesto autorizado. Los contratos futuros `AdmissionCommand` y
+`AdmissionResult` y sus motivos de rechazo están definidos en el
+[AGENTS.md raíz](../AGENTS.md#9-integración); todavía no están conectados al
+runtime. La UI sigue siendo solo consumidora de eventos y no administra la
+admisión.
+
 ## Responsable
 
 Persona B — Interfaz gráfica.
@@ -29,7 +42,7 @@ Implementar:
 Tkinter solamente puede ser actualizado desde el hilo principal.
 
 
-Nunca actualizar widgets desde Vehicle Threads.
+Nunca actualizar widgets desde hilos trabajadores, incluidos los hilos de tareas.
 
 
 ## Comunicación

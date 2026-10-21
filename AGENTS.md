@@ -15,8 +15,10 @@ El proyecto debe representar conceptos fundamentales de Sistemas Operativos:
 - Bloqueo de procesos.
 - Gestión de recursos compartidos.
 
-Cada vehículo debe comportarse como una unidad independiente de ejecución
-representada mediante un hilo.
+La implementación actual representa cada vehículo mediante un `Vehicle`
+que hereda de `Thread`. Este es un hecho del runtime actual, no una
+prescripción para desarrollo nuevo. La migración al modelo objetivo sigue
+pendiente y no está implementada.
 
 Los espacios del parqueadero representan recursos limitados compartidos
 entre los vehículos.
@@ -154,9 +156,13 @@ los otros módulos.
 
 ### Threads
 
-Cada vehículo debe ejecutarse como un Thread independiente.
-
-No crear hilos únicamente para animaciones o elementos gráficos.
+El runtime actual usa un hilo por vehículo; esa implementación se conserva
+como referencia hasta completar la migración. No agregar desarrollo nuevo
+basado en un hilo por vehículo ni ubicar la espera de admisión dentro de un
+hilo propio del vehículo. El objetivo aprobado usa hilos orientados a tareas,
+con admisión FIFO por elegibilidad y FIFO estricto entre solicitudes que
+compiten por el mismo puesto autorizado. No crear hilos únicamente para
+animaciones o elementos gráficos.
 
 ### Semaphore
 
@@ -168,9 +174,9 @@ Ejemplo conceptual:
 
 Semaphore(capacidad_del_parqueadero)
 
-Cuando no existan espacios disponibles, el hilo del vehículo espera por el
-Semaphore hasta que se libere un recurso. La admisión iniciada por el
-llamador no debe dormir ni bloquear esperando un espacio.
+La seguridad de capacidad debe mantenerse con `Semaphore` y sincronización
+apropiada. El runtime actual espera dentro del hilo del vehículo; esto no es
+el diseño objetivo. La futura admisión debe encolar sin bloquear al llamador.
 
 ### Lock
 
@@ -202,7 +208,7 @@ La interfaz consume esos eventos.
 
 Tkinter debe ejecutarse únicamente en el hilo principal.
 
-Nunca hacer esto desde un hilo de vehículo:
+Nunca hacer esto desde un hilo trabajador (incluidos los hilos de tareas):
 
 label.config(...)
 canvas.create_rectangle(...)
@@ -215,9 +221,9 @@ La interfaz debe consultar periódicamente la cola mediante:
 
 root.after(...)
 
-Arquitectura correcta:
+Flujo objetivo (migración pendiente; el runtime actual aún usa `Vehicle(Thread)`):
 
-Vehicle Thread
+Task worker
       ↓
 queue.put(event)
       ↓
@@ -238,19 +244,21 @@ WAITING
 PARKED
 FINISHED
 
-Interpretación respecto a Sistemas Operativos:
+Son estados del ciclo de vida del vehículo, no estados de un hilo específico.
+En el runtime actual se reflejan mediante `Vehicle(Thread)`; el mapeo a tareas
+del modelo objetivo está pendiente.
 
 CREATED
-    El hilo ha sido creado.
+    La solicitud del vehículo fue creada.
 
 WAITING
-    El hilo espera un recurso.
+    La solicitud espera un recurso.
 
 PARKED
-    El hilo obtuvo el recurso.
+    El vehículo obtuvo el puesto.
 
 FINISHED
-    El hilo terminó su ejecución.
+    El ciclo de vida del vehículo terminó.
 
 Estos estados pueden ampliarse si el equipo lo considera necesario,
 pero no deben eliminarse sin acuerdo.
@@ -347,7 +355,7 @@ integración y sincronización siguen pendientes de decisión según §16.
 
 La lógica específica debe permanecer en su módulo correspondiente.
 
-### API pública mínima de core
+### API pública mínima de core (implementación actual)
 
 - `Vehicle(Thread)` recibe `vehicle_id`, `parking` y `parking_duration`.
   `ParkingLot` registra, admite e inicia el hilo; el vehículo coordina su
@@ -356,8 +364,9 @@ La lógica específica debe permanecer en su módulo correspondiente.
   `admit(vehicle: Vehicle) -> bool`, `snapshot() -> ParkingSnapshot` y
   `close(wait: bool = True) -> None`.
 - `admit` devuelve `True` si el vehículo fue aceptado e iniciado, no si
-  obtuvo un espacio inmediatamente. La espera y los eventos correspondientes
-  ocurren dentro del vehículo.
+  obtuvo un espacio inmediatamente. En el runtime actual la espera y los
+  eventos correspondientes ocurren dentro del hilo `Vehicle`; esto no define
+  la arquitectura objetivo.
 - `ParkingSnapshot` es una lectura inmutable/copiada con `capacity`,
   `occupied_count`, `waiting_count` y `occupied_spaces`, una tupla de pares
   `(space_id, vehicle_id)`. No expone estructuras mutables internas.
@@ -367,6 +376,27 @@ La lógica específica debe permanecer en su módulo correspondiente.
   sincronización interna.
 - La UI consume eventos de la cola. Si lee un snapshot, lo hace solo como
   consulta segura, nunca para alterar el estado del core.
+
+### Arquitectura objetivo aprobada — migración pendiente
+
+No se ha implementado coordinador, hilos orientados a tareas ni cambio de
+admisión. El runtime actual sigue usando `Vehicle(Thread)` y la API descrita
+arriba. No agregar desarrollo nuevo basado en un hilo por vehículo. El diseño
+objetivo establece FIFO por elegibilidad y FIFO estricto entre solicitudes
+del mismo puesto autorizado.
+
+El dominio de autorizaciones está definido en `simulation/authorizations.py`.
+El JSON se validará completo antes de una futura ejecución y se entregará a
+core mediante su API pública; el runtime actual todavía no lo carga ni utiliza.
+
+En una futura integración, `AdmissionCommand` tendrá `vehicle_id` único dentro
+de la ejecución, patente canónica y duración; `ParkingLot` resolverá
+`authorized_space_id` desde el registro inmutable. `AdmissionResult` llevará
+aceptado/rechazado, referencia a la solicitud y, si se rechaza, una razón
+estable: `UNKNOWN_PLATE`, `NOT_AUTHORIZED`, `DUPLICATE_ACTIVE`, `LOT_CLOSED` o
+`INVALID_REQUEST`. Aceptado significa encolado/activo, no estacionado. Estos
+contratos no están conectados al runtime y no cambian la API actual de core o
+eventos.
 
 ---
 
