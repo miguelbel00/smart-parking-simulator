@@ -1,158 +1,324 @@
-"""Focused admission, capacity, and snapshot tests for the core lot."""
-
-from dataclasses import FrozenInstanceError
 from queue import Queue
-from threading import Event
+import math
+from threading import Event, Thread, current_thread, enumerate as active_threads
 from time import monotonic, sleep
 
 import pytest
 
-from core import events
+from core.events import VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED
 from core.parking import ParkingLot
 from core.vehicle import Vehicle
+from simulation.authorizations import Authorization, AuthorizationRegistry
 
 
-def wait_until(predicate, timeout: float = 2.0) -> None:
-    deadline = monotonic() + timeout
+def registry(*records):
+    return AuthorizationRegistry({plate: Authorization(plate, allowed, slot)
+                                  for plate, allowed, slot in records})
+
+
+def make_lot(capacity=2, records=None, queue=None):
+    records = records or [(f"P{i}", True, i % capacity) for i in range(8)]
+    return ParkingLot(capacity, queue or Queue(), registry(*records))
+
+
+def until(predicate, timeout=2):
+    limit = monotonic() + timeout
     while not predicate():
-        if monotonic() >= deadline:
-            pytest.fail("Timed out waiting for vehicle transition")
-        sleep(0.002)
+        assert monotonic() < limit
+        sleep(.002)
 
 
-def join_vehicles(*vehicles: Vehicle) -> None:
-    for vehicle in vehicles:
-        if vehicle.ident is not None:
-            vehicle.join(timeout=2)
-            assert not vehicle.is_alive()
+def request(lot, vehicle_id, plate, duration=.03):
+    return Vehicle(vehicle_id, lot, duration, plate)
 
 
-def test_constructor_and_admission_guards() -> None:
-    for capacity in (0, -1):
-        with pytest.raises(ValueError):
-            ParkingLot(capacity, Queue())
+def test_fixed_workers_capacity_exact_slot_and_lifecycle_order():
+    q = Queue()
+    lot = make_lot(2, [("A", True, 1), ("B", True, 0)], q)
+    lot.start()
+    a = request(lot, 1, "A", .04)
+    b = request(lot, 2, "B", .04)
+    assert lot.admit(a).accepted and lot.admit(b).accepted
+    until(lambda: lot.snapshot().occupied_count == 2)
+    assert lot.snapshot().occupied_spaces == ((0, 2), (1, 1))
+    assert {lot._admission_thread, lot._departure_thread} <= set(active_threads())
+    lot.close(cancel_pending=False)
+    assert lot._semaphore._value == 2
+    kinds = [event.type for event in q.queue if event.vehicle_id == 1]
+    assert kinds == [VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED]
 
-    queue = Queue()
-    lot = ParkingLot(1, queue)
-    other = ParkingLot(1, Queue())
-    vehicle = Vehicle(1, lot, 0.03)
-    with pytest.raises(ValueError):
-        other.admit(vehicle)
-    try:
-        assert lot.admit(vehicle) is True
-        with pytest.raises((ValueError, RuntimeError)):
-            lot.admit(vehicle)
-    finally:
-        join_vehicles(vehicle)
-    assert [item.type for item in queue.queue].count(events.VEHICLE_CREATED) == 1
 
+def test_rejection_reasons_and_duplicate_active_for_waiting_and_parked():
+    lot = make_lot(1, [("A", True, 0), ("B", True, 0), ("NO", False, None)])
+    lot.start()
+    assert lot.admit(request(lot, 1, "missing")).reason == "UNKNOWN_PLATE"
+    assert lot.admit(request(lot, 2, "NO")).reason == "NOT_AUTHORIZED"
+    assert lot.admit(request(lot, 3, "A", .2)).accepted
+    until(lambda: lot.snapshot().occupied_count == 1)
+    assert lot.admit(request(lot, 4, "A")).reason == "DUPLICATE_ACTIVE"
+    assert lot.admit(request(lot, 5, "B")).accepted
+    assert lot.admit(request(lot, 6, "B")).reason == "DUPLICATE_ACTIVE"
+    lot.close(wait=False)
+    assert lot.admit(request(lot, 7, "A")).reason == "LOT_CLOSED"
     lot.close()
-    rejected = Vehicle(2, lot, 0.01)
-    assert lot.admit(rejected) is False
-    assert rejected.ident is None
+    assert lot.snapshot().waiting_count == lot.snapshot().occupied_count == 0
+    invalid = Vehicle(8, lot, -1, "A")
+    # Invalid requests are rejected before closed-lot lookup.
+    assert lot.admit(invalid).reason == "INVALID_REQUEST"
 
 
-def test_failed_thread_start_rolls_back_without_created_event() -> None:
-    class UnstartableVehicle(Vehicle):
-        def start(self) -> None:
-            raise RuntimeError("start failed")
-
+def test_same_slot_fifo_and_progress_on_other_slot():
     queue = Queue()
-    lot = ParkingLot(1, queue)
-    vehicle = UnstartableVehicle(1, lot, 0.01)
-    with pytest.raises(RuntimeError, match="start failed"):
-        lot.admit(vehicle)
-    assert lot.snapshot().occupied_count == 0
-    assert lot.snapshot().waiting_count == 0
-    assert queue.empty()
+    lot = make_lot(2, [("A1", True, 0), ("A2", True, 0), ("B", True, 1)], queue)
+    lot.start()
+    a1 = request(lot, 1, "A1", .08)
+    a2 = request(lot, 2, "A2", .01)
+    b = request(lot, 3, "B", .01)
+    assert all(lot.admit(v).accepted for v in (a1, a2, b))
+    until(lambda: lot.snapshot().occupied_count == 2)
+    assert lot.snapshot().occupied_spaces == ((0, 1), (1, 3))
+    lot.close(cancel_pending=False)
+    assert a2.state == "FINISHED" and b.state == "FINISHED"
+    entries = [event.vehicle_id for event in list(queue.queue)
+               if event.type == "VEHICLE_ENTERED"]
+    assert entries.index(1) < entries.index(2)
 
 
-def test_created_worker_is_not_counted_as_waiting() -> None:
-    started = Event()
-    proceed = Event()
+def test_close_cancels_waiting_and_drains_committed_occupancy():
+    q = Queue()
+    lot = make_lot(1, [("A", True, 0), ("B", True, 0)], q)
+    lot.start()
+    parked, waiting = request(lot, 1, "A", .08), request(lot, 2, "B", .01)
+    assert lot.admit(parked).accepted and lot.admit(waiting).accepted
+    until(lambda: lot.snapshot().waiting_count == 1)
+    lot.close(wait=False)
+    assert lot.snapshot().occupied_count == 1
+    lot.close()
+    assert waiting.state == parked.state == "FINISHED"
+    assert lot._semaphore._value == 1
 
-    class DelayedVehicle(Vehicle):
-        def run(self) -> None:
-            started.set()
-            assert proceed.wait(timeout=2)
-            super().run()
 
-    lot = ParkingLot(1, Queue())
-    vehicle = DelayedVehicle(1, lot, 0.02)
+def test_invalid_request_and_vehicle_is_not_thread():
+    lot = make_lot()
+    lot.start()
+    vehicle = Vehicle(1, lot, 0, "P0")
+    assert not isinstance(vehicle, Thread)
+    vehicle.plate = 7
+    assert lot.admit(vehicle).reason == "INVALID_REQUEST"
+    lot.close()
+
+
+@pytest.mark.parametrize("duration", [True, False, "1", None, math.nan, math.inf, -math.inf, -0.01])
+def test_invalid_durations_have_no_admission_side_effects(duration):
+    q = Queue()
+    lot = make_lot(1, [("A", True, 0)], q)
+    lot.start()
     try:
-        assert lot.admit(vehicle)
-        assert started.wait(timeout=2)
-        assert lot.snapshot().waiting_count == 0
-        assert lot.snapshot().occupied_count == 0
+        invalid = request(lot, 1, "A", duration)
+        before = lot.snapshot()
+        result = lot.admit(invalid)
+        assert not result.accepted and result.reason == "INVALID_REQUEST"
+        assert lot.snapshot() == before
+        assert lot._semaphore._value == 1
+        assert not lot._active and not lot._active_plates and not lot._pending
+        assert q.empty()
+
+        valid = request(lot, 1, "A", 0)
+        assert lot.admit(valid).accepted
+        lot.close()
+        assert valid.state == "FINISHED"
     finally:
-        proceed.set()
-        join_vehicles(vehicle)
+        lot.close()
 
 
-def test_full_lot_admission_is_nonblocking_and_reuses_exclusive_space() -> None:
-    lot = ParkingLot(1, Queue())
-    first = Vehicle(1, lot, 0.18)
-    second = Vehicle(2, lot, 0.08)
+def test_zero_duration_completes_lifecycle_and_close_without_waiting():
+    entered = Event()
+
+    class EntryQueue(Queue):
+        def put(self, item, *args, **kwargs):
+            result = super().put(item, *args, **kwargs)
+            if item.type == VEHICLE_ENTERED:
+                entered.set()
+            return result
+
+    q = EntryQueue()
+    lot = make_lot(1, [("A", True, 0)], q)
+    lot.start()
+    vehicle = request(lot, 1, "A", 0)
     try:
-        assert lot.admit(first)
-        wait_until(lambda: lot.snapshot().occupied_count == 1)
-        start = monotonic()
-        assert lot.admit(second)
-        assert monotonic() - start < 0.1
-        wait_until(lambda: lot.snapshot().waiting_count == 1)
-        parked = lot.snapshot()
-        assert parked.occupied_spaces == ((0, 1),)
-        assert second.state == "WAITING"
-        wait_until(lambda: lot.snapshot().occupied_spaces == ((0, 2),))
-        assert first.state == "FINISHED"
+        assert lot.admit(vehicle).accepted
+        assert entered.wait(2)
+        lot.close()
+        assert vehicle.state == "FINISHED"
+        assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+        assert lot._semaphore._value == 1
+        assert [event.type for event in list(q.queue) if event.vehicle_id == 1] == [
+            VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED,
+        ]
     finally:
-        join_vehicles(first, second)
+        lot.close()
+
+
+def test_created_publication_cannot_be_overtaken_by_worker_events():
+    class BlockingQueue(Queue):
+        def __init__(self):
+            super().__init__()
+            self.created_entered = Event()
+            self.release_created = Event()
+
+        def put(self, item, *args, **kwargs):
+            if item.type == VEHICLE_CREATED:
+                self.created_entered.set()
+                if not self.release_created.wait(5):
+                    raise AssertionError("test did not release CREATED publication")
+            return super().put(item, *args, **kwargs)
+
+    q = BlockingQueue()
+    lot = make_lot(1, [("A", True, 0)], q)
+    lot.start()
+    vehicle = request(lot, 1, "A", .02)
+    admitted = Thread(target=lot.admit, args=(vehicle,))
+    try:
+        admitted.start()
+        assert q.created_entered.wait(2)
+        # The commit appends ENTERED while CREATED's put holds _publish_lock.
+        # Releasing the first put must drain the shared outbox in append order.
+        until(lambda: lot.snapshot().occupied_count == 1)
+    finally:
+        q.release_created.set()
+        admitted.join(5)
+        lot.close()
+    assert not admitted.is_alive()
+    kinds = [event.type for event in list(q.queue) if event.vehicle_id == 1]
+    assert kinds == [VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED]
+
+
+def test_early_close_cannot_lose_final_departure_notification():
+    q = Queue()
+    lot = make_lot(1, [("A", True, 0)], q)
+    admission_waiting = Event()
+    original_wait = lot._condition.wait
+
+    def observe_admission_wait(timeout=None):
+        if current_thread() is lot._admission_thread:
+            admission_waiting.set()
+        return original_wait(timeout)
+
+    lot._condition.wait = observe_admission_wait
+    lot.start()
+    try:
+        vehicle = request(lot, 1, "A", 30)
+        assert lot.admit(vehicle).accepted
+        until(lambda: lot.snapshot().occupied_count == 1)
+        lot.close(wait=False)
+        assert admission_waiting.wait(2)
+        # The admission thread announces immediately before Condition.wait,
+        # while holding the condition lock. This transition cannot notify
+        # until wait atomically releases that lock.
+        with lot._condition:
+            deadline, sequence, due_vehicle, slot = lot._deadlines[0]
+            lot._deadlines[0] = (monotonic() - 1, sequence, due_vehicle, slot)
+            lot._condition.notify_all()
+        lot.close(wait=True)
+    finally:
+        lot.close(wait=True)
+    assert vehicle.state == "FINISHED"
     assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
 
 
-def test_snapshots_are_frozen_sorted_copies_under_load() -> None:
-    release_parked = Event()
+def test_concurrent_same_plate_admission_has_single_winner():
+    from threading import Barrier
 
-    class BlockingVehicle(Vehicle):
-        def run(self) -> None:
-            space_id = self.parking._enter(self)
-            if space_id is None:
-                return
-            try:
-                release_parked.wait(timeout=2)
-            finally:
-                self.parking._exit(self, space_id)
+    contenders = 12
+    lot = make_lot(1, [("A", True, 0)])
+    lot.start()
+    barrier = Barrier(contenders)
+    results = [None] * contenders
 
-    lot = ParkingLot(2, Queue())
-    empty = lot.snapshot()
-    assert (empty.capacity, empty.occupied_count, empty.waiting_count, empty.occupied_spaces) == (
-        2, 0, 0, (),
-    )
-    with pytest.raises(FrozenInstanceError):
-        empty.occupied_count = 1
+    def contend(index):
+        barrier.wait()
+        results[index] = lot.admit(request(lot, index + 1, "A", .02))
 
-    vehicles = [BlockingVehicle(index, lot, 0.12) for index in range(8)]
+    threads = [Thread(target=contend, args=(index,)) for index in range(contenders)]
     try:
-        for vehicle in vehicles:
-            assert lot.admit(vehicle)
-        wait_until(lambda: (
-            lot.snapshot().occupied_count == 2
-            and lot.snapshot().waiting_count >= 1
-        ))
-        snapshot = lot.snapshot()
-        assert snapshot.occupied_count == 2
-        assert snapshot.waiting_count == sum(v.state == "WAITING" for v in vehicles)
-        for _ in range(150):
-            current = lot.snapshot()
-            spaces = current.occupied_spaces
-            assert current.occupied_count == len(spaces) <= current.capacity
-            assert len({space for space, _ in spaces}) == len(spaces)
-            assert spaces == tuple(sorted(spaces))
-            assert 0 <= current.waiting_count <= len(vehicles)
-            sleep(0.002)
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(3)
+            assert not thread.is_alive()
+        assert sum(result.accepted for result in results) == 1
+        assert sum(result.reason == "DUPLICATE_ACTIVE" for result in results) == contenders - 1
     finally:
-        release_parked.set()
-        join_vehicles(*vehicles)
-    assert empty.occupied_spaces == ()
-    assert snapshot.occupied_count == 2
-    assert lot.snapshot().occupied_spaces == ()
+        lot.close()
+
+
+def test_worker_startup_failure_joins_started_worker(monkeypatch):
+    lot = make_lot()
+    original_start = lot._departure_thread.start
+
+    def fail_start():
+        raise RuntimeError("controlled worker startup failure")
+
+    monkeypatch.setattr(lot._departure_thread, "start", fail_start)
+    with pytest.raises(RuntimeError, match="controlled worker startup failure"):
+        lot.start()
+    assert not lot._admission_thread.is_alive()
+    assert not lot._departure_started
+    monkeypatch.setattr(lot._departure_thread, "start", original_start)
+
+
+def test_sink_publication_failure_closes_and_drains_workers():
+    class FailOnceQueue(Queue):
+        def __init__(self):
+            super().__init__()
+            self.fail = True
+            self.failed_put = Event()
+
+        def put(self, item, *args, **kwargs):
+            if self.fail:
+                self.fail = False
+                self.failed_put.set()
+                raise OSError("controlled sink failure")
+            return super().put(item, *args, **kwargs)
+
+    q = FailOnceQueue()
+    lot = make_lot(1, [("A", True, 0)], q)
+    lot.start()
+    admission_errors = []
+
+    def admit():
+        try:
+            lot.admit(request(lot, 1, "A", .01))
+        except OSError as error:
+            admission_errors.append(error)
+
+    admission = Thread(target=admit)
+    admission.start()
+    admission.join(3)
+    assert not admission.is_alive()
+    assert q.failed_put.is_set()
+    with pytest.raises(RuntimeError, match="event publication failed"):
+        lot.close(wait=True)
+    assert admission_errors
+    assert not lot._admission_thread.is_alive()
+    assert not lot._departure_thread.is_alive()
+    assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+
+
+def test_join_failure_can_be_retried_without_losing_drain(monkeypatch):
+    lot = make_lot(1, [("A", True, 0)])
+    lot.start()
+    assert lot.admit(request(lot, 1, "A", .01)).accepted
+    original_join = lot._admission_thread.join
+
+    def fail_join(timeout=None):
+        raise RuntimeError("controlled join failure")
+
+    monkeypatch.setattr(lot._admission_thread, "join", fail_join)
+    with pytest.raises(RuntimeError, match="controlled join failure"):
+        lot.close(wait=True)
+    monkeypatch.setattr(lot._admission_thread, "join", original_join)
+    lot.close(wait=True)
+    assert lot._drained
+    assert not lot._admission_thread.is_alive()
+    assert not lot._departure_thread.is_alive()

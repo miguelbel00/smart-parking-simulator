@@ -15,10 +15,10 @@ El proyecto debe representar conceptos fundamentales de Sistemas Operativos:
 - Bloqueo de procesos.
 - Gestión de recursos compartidos.
 
-La implementación actual representa cada vehículo mediante un `Vehicle`
-que hereda de `Thread`. Este es un hecho del runtime actual, no una
-prescripción para desarrollo nuevo. La migración al modelo objetivo sigue
-pendiente y no está implementada.
+Cada vehículo se representa mediante un objeto `Vehicle` que contiene los
+datos de la solicitud; no hereda de `Thread`. Cada ejecución crea un
+trabajador de admisión y otro de vencimientos/salidas en `ParkingLot`, además
+del productor de `Simulator`.
 
 Los espacios del parqueadero representan recursos limitados compartidos
 entre los vehículos.
@@ -156,13 +156,10 @@ los otros módulos.
 
 ### Threads
 
-El runtime actual usa un hilo por vehículo; esa implementación se conserva
-como referencia hasta completar la migración. No agregar desarrollo nuevo
-basado en un hilo por vehículo ni ubicar la espera de admisión dentro de un
-hilo propio del vehículo. El objetivo aprobado usa hilos orientados a tareas,
-con admisión FIFO por elegibilidad y FIFO estricto entre solicitudes que
-compiten por el mismo puesto autorizado. No crear hilos únicamente para
-animaciones o elementos gráficos.
+`ParkingLot` usa dos hilos orientados a tareas por ejecución: admisión y
+vencimientos/salidas. `Simulator` conserva un hilo productor. No agregar
+hilos por vehículo ni ubicar esperas de admisión o permanencia dentro de una
+solicitud. La admisión es FIFO por elegibilidad y FIFO estricto por puesto.
 
 ### Semaphore
 
@@ -174,9 +171,9 @@ Ejemplo conceptual:
 
 Semaphore(capacidad_del_parqueadero)
 
-La seguridad de capacidad debe mantenerse con `Semaphore` y sincronización
-apropiada. El runtime actual espera dentro del hilo del vehículo; esto no es
-el diseño objetivo. La futura admisión debe encolar sin bloquear al llamador.
+El permiso del `Semaphore` se adquiere únicamente al confirmar ocupación y se
+libera al salir. Las solicitudes en espera no retienen permisos; `Lock` y
+`Condition` protegen transiciones y coordinan trabajadores sin sondeo activo.
 
 ### Lock
 
@@ -221,7 +218,7 @@ La interfaz debe consultar periódicamente la cola mediante:
 
 root.after(...)
 
-Flujo objetivo (migración pendiente; el runtime actual aún usa `Vehicle(Thread)`):
+Flujo actual:
 
 Task worker
       ↓
@@ -245,8 +242,8 @@ PARKED
 FINISHED
 
 Son estados del ciclo de vida del vehículo, no estados de un hilo específico.
-En el runtime actual se reflejan mediante `Vehicle(Thread)`; el mapeo a tareas
-del modelo objetivo está pendiente.
+En el runtime actual son estados del dato `Vehicle`; los hilos de tareas del
+parqueadero ejecutan transiciones sin representar un vehículo individual.
 
 CREATED
     La solicitud del vehículo fue creada.
@@ -343,8 +340,10 @@ app = ParkingApp(
 
 app.run()
 
-`Simulator` admite, detiene y cierra cada ejecución mediante la API pública
-de su propio `ParkingLot`; publica los eventos de inicio y fin en la cola
+`Simulator` recibe una secuencia ordenada de patentes. `main.py` valida el
+registro JSON completo antes de iniciar la ejecución y lo inyecta en el
+`ParkingLot` recién creado. `Simulator` admite, detiene y cierra la ejecución
+mediante la API de `ParkingLot`; publica los eventos de inicio y fin en la cola
 reenviadora de esa ejecución. La fábrica crea un parqueadero y métricas
 independientes por ejecución; la UI solo consume la cola compartida y solicita
 inicio o detención a `Simulator`, sin administrar hilos ni recursos de core.
@@ -355,48 +354,38 @@ integración y sincronización siguen pendientes de decisión según §16.
 
 La lógica específica debe permanecer en su módulo correspondiente.
 
-### API pública mínima de core (implementación actual)
+### API pública mínima de core (runtime actual)
 
-- `Vehicle(Thread)` recibe `vehicle_id`, `parking` y `parking_duration`.
-  `ParkingLot` registra, admite e inicia el hilo; el vehículo coordina su
-  ciclo de vida mediante `ParkingLot`.
-- `ParkingLot(capacity: int, event_queue: Queue)` expone
-  `admit(vehicle: Vehicle) -> bool`, `snapshot() -> ParkingSnapshot` y
-  `close(wait: bool = True) -> None`.
-- `admit` devuelve `True` si el vehículo fue aceptado e iniciado, no si
-  obtuvo un espacio inmediatamente. En el runtime actual la espera y los
-  eventos correspondientes ocurren dentro del hilo `Vehicle`; esto no define
-  la arquitectura objetivo.
+- `Vehicle` contiene `vehicle_id`, patente, duración y estado; no es un hilo.
+- `ParkingLot(capacity, event_queue, authorization_registry)` expone
+  `start()`, `admit(vehicle) -> AdmissionResult`, `snapshot()` y `close()`.
+- `admit` valida, resuelve autorización, rechaza duplicados activos y encola
+  de forma síncrona; aceptado significa activo/en cola, no estacionado.
+- `AdmissionResult` conserva el identificador y la referencia de solicitud
+  aceptada, o uno de los motivos estables de rechazo.
 - `ParkingSnapshot` es una lectura inmutable/copiada con `capacity`,
   `occupied_count`, `waiting_count` y `occupied_spaces`, una tupla de pares
   `(space_id, vehicle_id)`. No expone estructuras mutables internas.
-- `close` rechaza nuevas admisiones, cancela vehículos que esperan y permite
-  terminar a los ya estacionados. Con `wait=True`, espera a que terminen los
-  hilos activos. No se terminan hilos a la fuerza; la política requiere
-  sincronización interna.
+- El cierre temprano cancela solicitudes en espera y permite terminar las
+  estacionadas. El cierre natural drena las aceptadas. `wait=True` une ambos
+  trabajadores y no termina hilos a la fuerza.
 - La UI consume eventos de la cola. Si lee un snapshot, lo hace solo como
   consulta segura, nunca para alterar el estado del core.
 
-### Arquitectura objetivo aprobada — migración pendiente
+### Arquitectura de admisión y autorización
 
-No se ha implementado coordinador, hilos orientados a tareas ni cambio de
-admisión. El runtime actual sigue usando `Vehicle(Thread)` y la API descrita
-arriba. No agregar desarrollo nuevo basado en un hilo por vehículo. El diseño
-objetivo establece FIFO por elegibilidad y FIFO estricto entre solicitudes
-del mismo puesto autorizado.
+La arquitectura implementada mantiene FIFO por elegibilidad y FIFO estricto
+entre solicitudes del mismo puesto autorizado. Solicitudes bloqueadas para un
+puesto no impiden progreso en otro puesto elegible.
 
 El dominio de autorizaciones está definido en `simulation/authorizations.py`.
-El JSON se validará completo antes de una futura ejecución y se entregará a
-core mediante su API pública; el runtime actual todavía no lo carga ni utiliza.
+El JSON se valida completo antes de iniciar los trabajadores y se entrega a
+core como registro inmutable. El orden de la secuencia del Simulator determina
+las llegadas; el orden del JSON no determina la generación.
 
-En una futura integración, `AdmissionCommand` tendrá `vehicle_id` único dentro
-de la ejecución, patente canónica y duración; `ParkingLot` resolverá
-`authorized_space_id` desde el registro inmutable. `AdmissionResult` llevará
-aceptado/rechazado, referencia a la solicitud y, si se rechaza, una razón
-estable: `UNKNOWN_PLATE`, `NOT_AUTHORIZED`, `DUPLICATE_ACTIVE`, `LOT_CLOSED` o
-`INVALID_REQUEST`. Aceptado significa encolado/activo, no estacionado. Estos
-contratos no están conectados al runtime y no cambian la API actual de core o
-eventos.
+`ParkingLot` resuelve el puesto desde el registro inmutable. `AdmissionResult`
+incluye aceptado/rechazado y el motivo estable (`UNKNOWN_PLATE`,
+`NOT_AUTHORIZED`, `DUPLICATE_ACTIVE`, `LOT_CLOSED` o `INVALID_REQUEST`).
 
 ---
 

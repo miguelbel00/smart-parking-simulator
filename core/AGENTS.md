@@ -6,17 +6,16 @@ Persona A — Motor del parqueadero y concurrencia.
 
 ## Responsabilidades y API
 
-El runtime actual implementa `Vehicle(Thread)`, `ParkingLot` y el evento
-compartido según el contrato del [AGENTS.md raíz](../AGENTS.md#9-integración).
-Esta descripción es factual y no autoriza desarrollo nuevo con un hilo por
-vehículo; la migración al modelo objetivo sigue pendiente. En particular, la
-API actual es:
+El runtime implementa solicitudes `Vehicle` (no son hilos), `ParkingLot` y el
+evento compartido según el contrato del [AGENTS.md raíz](../AGENTS.md#9-integración).
+La API actual es:
 
-- `Vehicle` recibe `vehicle_id`, `parking` y `parking_duration`; gestiona su
-  ciclo de vida coordinándose con `ParkingLot`.
-- `ParkingLot(capacity: int, event_queue: Queue)` registra, admite e inicia
-  vehículos mediante `admit(vehicle: Vehicle) -> bool`; la admisión no espera
-  por un espacio disponible.
+- `Vehicle` almacena `vehicle_id`, `parking`, `parking_duration` y patente.
+- `ParkingLot(capacity, event_queue, authorization_registry)` requiere el
+  registro inmutable, y expone `start()`, `admit(vehicle) -> AdmissionResult`,
+  `snapshot()` y `close()`.
+- La admisión valida y encola sin esperar; `AdmissionResult` incluye el
+  vehículo aceptado o un motivo estable de rechazo.
 - `snapshot() -> ParkingSnapshot` ofrece una lectura inmutable/copiada, sin
   exponer estructuras internas. `close(wait: bool = True) -> None` aplica la
   política de cierre descrita en el contrato raíz.
@@ -25,14 +24,14 @@ API actual es:
 
 ## Concurrencia
 
-- Un `Semaphore` y un `Lock` mantienen capacidad y estado seguros. Actualmente
-  los vehículos esperan en su hilo; no extender este patrón. El objetivo es
-  admisión FIFO por elegibilidad y FIFO estricto por puesto autorizado usando
-  hilos orientados a tareas, sin espera dentro de un hilo por vehículo.
+- Dos hilos orientados a tareas por lote realizan admisión y salidas/deadlines;
+  no crear un hilo por vehículo ni mantener un trabajador durante su estadía.
+- Un `Semaphore` y un `Lock`/`Condition` mantienen capacidad y estado seguros.
+- La admisión respeta FIFO por elegibilidad y FIFO estricto por puesto.
 - Un `Lock` protege el estado compartido y la asignación de espacios.
 - Evitar asignaciones duplicadas y liberaciones dobles del Semaphore.
-- El cierre no termina hilos a la fuerza: cancela los que esperan y permite
-  completar a los ya estacionados, con sincronización interna.
+- El cierre temprano cancela solicitudes en espera; el cierre natural drena
+  las aceptadas. Ambos permiten completar las solicitudes estacionadas.
 
 ## Restricciones
 

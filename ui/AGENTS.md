@@ -1,17 +1,12 @@
 # UI Agent Instructions
 
-## Implementación actual y objetivo aprobado
+## Integración actual
 
-El runtime actual usa un `Vehicle` por hilo; esta es una descripción factual,
-no una instrucción para desarrollo nuevo. La migración está pendiente y no
-está implementada. No agregar desarrollo que dependa de un hilo por vehículo
-ni colocar allí la espera de admisión. El objetivo usa hilos orientados a
-tareas, FIFO por elegibilidad y FIFO estricto entre solicitudes del mismo
-puesto autorizado. Los contratos futuros `AdmissionCommand` y
-`AdmissionResult` y sus motivos de rechazo están definidos en el
-[AGENTS.md raíz](../AGENTS.md#9-integración); todavía no están conectados al
-runtime. La UI sigue siendo solo consumidora de eventos y no administra la
-admisión.
+Core representa vehículos como datos de solicitud y ejecuta trabajadores
+orientados a tareas con FIFO por elegibilidad y FIFO estricto entre solicitudes
+del mismo puesto autorizado. `AdmissionResult` y sus motivos de rechazo están
+conectados al runtime, pero no generan eventos nuevos. La UI sigue siendo solo
+consumidora de los eventos compartidos y no administra la admisión.
 
 ## Responsable
 

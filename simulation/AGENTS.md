@@ -1,29 +1,27 @@
 # Simulation Agent Instructions
 
-## Current runtime and approved target
+## Current runtime
 
-The runtime currently generates `Vehicle` instances through the existing
-`Simulator` and core API; it does not load authorization JSON. Migration to the
-approved task-oriented admission model is pending and not implemented. Do not
-add new development based on one thread per vehicle or place admission waits
-inside a vehicle thread. The target is FIFO by eligibility, with strict FIFO
-among requests for the same authorized slot.
+`Simulator` receives an explicit ordered plate sequence and generates
+request-data `Vehicle` instances; it does not choose plates randomly. `main.py`
+validates the authorization JSON before each run and passes its immutable
+registry to `ParkingLot`. Core uses two task workers, FIFO by eligibility and
+strict FIFO among requests for the same authorized slot. Do not add a thread
+per vehicle or place admission/dwell waits in a vehicle request.
 
 `simulation/authorizations.py` provides the authorization JSON domain loader.
-Before a future run, validate the complete file and pass the immutable registry
-to core through its public API. Extra JSON keys are rejected (strict schema).
+Before each run, validate the complete file and pass the immutable registry to
+core through its public API. Extra JSON keys are rejected (strict schema).
 Different authorized plates may share a `space_id`, but only one request may
 occupy that space at a time. FIFO applies to requests targeting that space,
 not to the order of records in the JSON file.
-The loader is not yet integrated into the runtime.
+The default registry path and deterministic example plate sequence are in
+`config.py` and `default_authorizations.json`.
 
-Future contracts only: `AdmissionCommand` contains a run-scoped unique
-`vehicle_id`, canonical plate, and duration. Core resolves
-`authorized_space_id` from the immutable registry. `AdmissionResult` carries
-accepted/rejected, a request reference, and one stable rejection reason:
-`UNKNOWN_PLATE`, `NOT_AUTHORIZED`, `DUPLICATE_ACTIVE`, `LOT_CLOSED`, or
-`INVALID_REQUEST`. Accepted means queued/active, not parked. These contracts
-are not implemented or wired into the current runtime.
+`ParkingLot.admit` returns `AdmissionResult` with accepted/rejected, a request
+reference and one stable rejection reason: `UNKNOWN_PLATE`, `NOT_AUTHORIZED`,
+`DUPLICATE_ACTIVE`, `LOT_CLOSED`, or `INVALID_REQUEST`. Accepted means
+queued/active, not parked.
 
 ## Responsable
 

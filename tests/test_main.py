@@ -3,6 +3,8 @@
 from queue import Empty
 from time import monotonic, sleep
 
+from simulation.authorizations import Authorization, AuthorizationRegistry
+
 import main as entry
 
 
@@ -17,8 +19,9 @@ def test_main_composes_fresh_runs_and_reports_only_latest(monkeypatch, capsys):
     lots = []
     real_lot = entry.ParkingLot
 
-    def capture_lot(capacity, event_queue):
-        lot = real_lot(capacity=capacity, event_queue=event_queue)
+    def capture_lot(capacity, event_queue, authorization_registry):
+        lot = real_lot(capacity=capacity, event_queue=event_queue,
+                       authorization_registry=authorization_registry)
         lots.append(lot)
         return lot
 
@@ -49,6 +52,10 @@ def test_main_composes_fresh_runs_and_reports_only_latest(monkeypatch, capsys):
             assert [e.type for e in events].count("SIMULATION_FINISHED") == 2
 
     monkeypatch.setattr(entry, "ParkingApp", FakeApp)
+    monkeypatch.setattr(entry.config, "PLATE_SEQUENCE", ("EDU-001",))
+    monkeypatch.setattr(entry, "load_authorizations", lambda *_: AuthorizationRegistry({
+        "EDU-001": Authorization("EDU-001", True, 0),
+    }))
     entry.main()
     assert len(lots) == 2 and lots[0] is not lots[1]
     assert all(lot.capacity == 2 for lot in lots)
@@ -69,3 +76,24 @@ def test_main_without_run_does_not_print_statistics(monkeypatch, capsys):
     monkeypatch.setattr(entry, "ParkingApp", FakeApp)
     entry.main()
     assert capsys.readouterr().out == ""
+
+
+def test_invalid_authorization_file_prevents_run_start(monkeypatch, tmp_path):
+    bad_file = tmp_path / "invalid.json"
+    bad_file.write_text('{"vehicles": [}', encoding="utf-8")
+    monkeypatch.setattr(entry.config, "AUTHORIZATION_FILE", bad_file)
+    monkeypatch.setattr(entry.config, "PLATE_SEQUENCE", ("A",))
+
+    class FakeApp:
+        def __init__(self, event_queue, simulator, capacity):
+            self.simulator = simulator
+
+        def run(self):
+            import pytest
+            with pytest.raises(ValueError):
+                self.simulator.start()
+            assert not self.simulator.is_active()
+            assert self.simulator.metrics is None
+
+    monkeypatch.setattr(entry, "ParkingApp", FakeApp)
+    entry.main()
