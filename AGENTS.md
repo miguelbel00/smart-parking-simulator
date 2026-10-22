@@ -130,6 +130,9 @@ ParkingEvent(
     vehicle_id: int | None = None,
     space_id: int | None = None,
     waiting_time: float | None = None,
+    plate: str | None = None,
+    authorized_space_id: int | None = None,
+    reason: str | None = None,
 )
 ```
 
@@ -140,12 +143,23 @@ VEHICLE_WAITING
 VEHICLE_ENTERED
 VEHICLE_EXITED
 VEHICLE_FINISHED
+VEHICLE_REJECTED
+VEHICLE_CANCELLED
 SIMULATION_STARTED
 SIMULATION_FINISHED
 
 Core es responsable de los eventos del ciclo de vida de vehículos.
 `Simulator` es responsable de `SIMULATION_STARTED` y
 `SIMULATION_FINISHED`. Los campos opcionales se informan cuando corresponda.
+Los tres campos nuevos se agregan después de los cinco originales, preservando
+compatibilidad posicional. CREATED solo corresponde a solicitudes aceptadas;
+REJECTED lleva el motivo estable y no produce estado activo. CANCELLED termina
+una solicitud aceptada aún en espera por `STOP_REQUESTED`, no es FINISHED.
+FINISHED solo representa finalización normal tras estacionamiento. `space_id`
+significa puesto ocupado/liberado físicamente; `authorized_space_id` puede
+estar disponible antes de ocuparlo. Core publica sus terminales antes de que
+Simulator envíe SIMULATION_FINISHED. Métricas cuentan REJECTED, FINISHED y
+CANCELLED desde sus respectivos eventos.
 
 No cambiar nombres de campos o tipos de eventos sin coordinarlo con
 los otros módulos.

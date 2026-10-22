@@ -91,8 +91,6 @@ class Simulator:
                 result = parking.admit(vehicle)
                 if result.accepted:
                     metrics.record_admitted()
-                else:
-                    metrics.record_rejected()
             parking.close(wait=True, cancel_pending=stop_requested.is_set())
             event_queue.put(ParkingEvent(type=SIMULATION_FINISHED, timestamp=time()))
             with self._state_lock:

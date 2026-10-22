@@ -5,7 +5,8 @@ from time import monotonic, sleep
 
 import pytest
 
-from core.events import VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED
+from core.events import (VEHICLE_CANCELLED, VEHICLE_CREATED, VEHICLE_ENTERED,
+                         VEHICLE_EXITED, VEHICLE_FINISHED, VEHICLE_REJECTED)
 from core.parking import ParkingLot
 from core.vehicle import Vehicle
 from simulation.authorizations import Authorization, AuthorizationRegistry
@@ -67,6 +68,31 @@ def test_rejection_reasons_and_duplicate_active_for_waiting_and_parked():
     assert lot.admit(invalid).reason == "INVALID_REQUEST"
 
 
+def test_waiting_events_and_immutable_snapshot_carry_authorized_slot():
+    from dataclasses import FrozenInstanceError
+
+    q = Queue()
+    lot = make_lot(2, [("A", True, 0), ("B", True, 0)], q)
+    lot.start()
+    occupied = request(lot, 1, "A", .15)
+    waiting = request(lot, 2, "B", .01)
+    assert lot.admit(occupied).accepted and lot.admit(waiting).accepted
+    until(lambda: lot.snapshot().waiting_count == 1)
+    snapshot = lot.snapshot()
+    waiting_view = next(item for item in snapshot.active_requests if item.vehicle_id == 2)
+    assert (waiting_view.plate, waiting_view.authorized_space_id,
+            waiting_view.state, waiting_view.space_id) == ("B", 0, "WAITING", None)
+    with pytest.raises(FrozenInstanceError):
+        waiting_view.state = "PARKED"
+    waiting_event = next(item for item in q.queue
+                         if item.type == "VEHICLE_WAITING" and item.vehicle_id == 2)
+    created = next(item for item in q.queue
+                   if item.type == VEHICLE_CREATED and item.vehicle_id == 2)
+    assert (waiting_event.space_id, waiting_event.authorized_space_id, waiting_event.plate) == (None, 0, "B")
+    assert (created.space_id, created.authorized_space_id, created.plate) == (None, 0, "B")
+    lot.close()
+
+
 def test_same_slot_fifo_and_progress_on_other_slot():
     queue = Queue()
     lot = make_lot(2, [("A1", True, 0), ("A2", True, 0), ("B", True, 1)], queue)
@@ -94,7 +120,10 @@ def test_close_cancels_waiting_and_drains_committed_occupancy():
     lot.close(wait=False)
     assert lot.snapshot().occupied_count == 1
     lot.close()
-    assert waiting.state == parked.state == "FINISHED"
+    assert waiting.state == "CANCELLED" and parked.state == "FINISHED"
+    waiting_events = [event for event in q.queue if event.vehicle_id == waiting.vehicle_id]
+    assert [event.type for event in waiting_events] == [VEHICLE_CREATED, "VEHICLE_WAITING", VEHICLE_CANCELLED]
+    assert waiting_events[-1].reason == "STOP_REQUESTED"
     assert lot._semaphore._value == 1
 
 
@@ -121,11 +150,11 @@ def test_invalid_durations_have_no_admission_side_effects(duration):
         assert lot.snapshot() == before
         assert lot._semaphore._value == 1
         assert not lot._active and not lot._active_plates and not lot._pending
-        assert q.empty()
+        assert [event.type for event in q.queue] == [VEHICLE_REJECTED]
 
         valid = request(lot, 1, "A", 0)
         assert lot.admit(valid).accepted
-        lot.close()
+        lot.close(cancel_pending=False)
         assert valid.state == "FINISHED"
     finally:
         lot.close()

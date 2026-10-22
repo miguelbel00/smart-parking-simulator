@@ -5,7 +5,8 @@
 Core representa vehículos como datos de solicitud y ejecuta trabajadores
 orientados a tareas con FIFO por elegibilidad y FIFO estricto entre solicitudes
 del mismo puesto autorizado. `AdmissionResult` y sus motivos de rechazo están
-conectados al runtime, pero no generan eventos nuevos. La UI sigue siendo solo
+conectados al runtime; rechazos emiten `VEHICLE_REJECTED` y pendientes
+cancelados por cierre temprano emiten `VEHICLE_CANCELLED`. La UI sigue siendo solo
 consumidora de los eventos compartidos y no administra la admisión.
 
 ## Responsable
@@ -66,6 +67,8 @@ VEHICLE_WAITING
 VEHICLE_ENTERED
 VEHICLE_EXITED
 VEHICLE_FINISHED
+VEHICLE_REJECTED
+VEHICLE_CANCELLED
 SIMULATION_STARTED
 SIMULATION_FINISHED
 

@@ -104,6 +104,16 @@ def test_projection_events_snapshot_and_counters_agree() -> None:
     assert (projection.occupied_count, projection.available_count) == (1, 4)
 
 
+def test_cancelled_removes_only_matching_waiter_and_preserves_occupancy_order():
+    projection = ParkingProjection(3)
+    projection.apply_event(event("VEHICLE_ENTERED", 1, 0))
+    projection.apply_event(event("VEHICLE_WAITING", 2))
+    projection.apply_event(event("VEHICLE_WAITING", 3))
+    projection.apply_event(event("VEHICLE_CANCELLED", 2))
+    assert projection.occupied == {1: 1}
+    assert projection.waiting == {3}
+
+
 def test_snapshot_replaces_stale_slots_and_waiters_finish_without_entry() -> None:
     projection = ParkingProjection(5)
     projection.apply_event(event("VEHICLE_ENTERED", 9, 4))

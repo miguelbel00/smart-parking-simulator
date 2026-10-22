@@ -2,119 +2,101 @@
 
 ## Purpose
 
-Define the immutable shared event payload `ParkingEvent` and the ordered lifecycle publication rules for core: which event types core emits, when, into the supplied `queue.Queue`, and how optional fields (`vehicle_id`, `space_id`, `waiting_time`) are populated. This spec pins down the two user-approved behavior decisions: a vehicle cancelled while waiting by `close` emits the existing `VEHICLE_FINISHED` event (no new event type such as `VEHICLE_CANCELLED` is introduced), and `waiting_time` is present only on `VEHICLE_ENTERED`, measured from waiting start to space acquisition.
-
-Signatures preserved from `AGENTS.md` (section 4): the immutable shared dataclass `ParkingEvent` with fields `type: str`, `timestamp: float`, `vehicle_id: int | None = None`, `space_id: int | None = None`, `waiting_time: float | None = None`; event types `VEHICLE_CREATED`, `VEHICLE_WAITING`, `VEHICLE_ENTERED`, `VEHICLE_EXITED`, `VEHICLE_FINISHED`, `SIMULATION_STARTED`, `SIMULATION_FINISHED`.
-
-Out of scope: UI consumption, snapshots and admission mechanics (`parking-capacity`, `vehicle-lifecycle`), and ownership of `SIMULATION_STARTED`/`SIMULATION_FINISHED` by `Simulator`.
+Define the immutable `ParkingEvent` payload and the lifecycle events published by `ParkingLot` and `Simulator` to the shared queue. Core vehicle events describe request state; simulation boundary events belong to `Simulator`.
 
 ## Requirements
 
-### Requirement: Immutable event payload
+### Requirement: Immutable shared event payload
 
-The system MUST define `ParkingEvent` as an immutable dataclass supporting no attribute mutation after construction, with exactly the documented fields and defaults listed above.
+The system MUST define frozen dataclass `ParkingEvent` with fields in this order, preserving the original five positional fields and appending the three optional fields:
 
-The system MUST publish all core vehicle lifecycle events into the `queue.Queue` supplied at lot construction, never through any UI or Tkinter surface.
+| Field | Type | Default |
+|---|---|---|
+| `type` | `str` | required |
+| `timestamp` | `float` | required |
+| `vehicle_id` | `int \| None` | `None` |
+| `space_id` | `int \| None` | `None` |
+| `waiting_time` | `float \| None` | `None` |
+| `plate` | `str \| None` | `None` |
+| `authorized_space_id` | `int \| None` | `None` |
+| `reason` | `str \| None` | `None` |
 
-#### Scenario: Event instances reject mutation
+Core MUST publish vehicle events through its supplied event queue. The UI consumes that shared queue; workers MUST NOT update Tkinter directly.
 
-- GIVEN a `ParkingEvent` instance constructed with any valid field values
-- WHEN any code attempts to assign to one of its attributes after construction
-- THEN the attempt fails and the instance keeps its constructed values
+#### Scenario: Payload cannot be mutated
 
-#### Scenario: Events reach the shared queue
+- GIVEN a constructed `ParkingEvent`
+- WHEN code attempts to assign to any field
+- THEN the assignment fails and the original value is unchanged
 
-- GIVEN an accepted vehicle progressing through its lifecycle against a supplied `queue.Queue`
-- WHEN lifecycle state transitions occur
-- THEN each corresponding event is observable by draining that queue
-- AND no core-emitted event appears through any channel other than the supplied queue
+### Requirement: Event vocabulary and ownership
 
-### Requirement: Core event vocabulary
+The shared vocabulary MUST be `VEHICLE_CREATED`, `VEHICLE_WAITING`, `VEHICLE_ENTERED`, `VEHICLE_EXITED`, `VEHICLE_FINISHED`, `VEHICLE_REJECTED`, `VEHICLE_CANCELLED`, `SIMULATION_STARTED`, and `SIMULATION_FINISHED`.
 
-The system MUST emit only the seven established event type names. Core MUST emit only vehicle lifecycle events: `VEHICLE_CREATED`, `VEHICLE_WAITING`, `VEHICLE_ENTERED`, `VEHICLE_EXITED`, and `VEHICLE_FINISHED`.
+Core MUST publish vehicle lifecycle events. `Simulator` MUST publish `SIMULATION_STARTED` and `SIMULATION_FINISHED` to the execution's forwarding queue. A rejection is an admission outcome, not an active request, and MUST emit `VEHICLE_REJECTED` without `VEHICLE_CREATED`. `VEHICLE_CREATED` MUST be emitted only after acceptance.
 
-Core MUST NOT emit `SIMULATION_STARTED` or `SIMULATION_FINISHED`; those types remain reserved for `Simulator`.
+#### Scenario: Rejected request has no active lifecycle
 
-Core MUST NOT introduce additional event types for shutdown outcomes, including but not limited to any `VEHICLE_CANCELLED` type.
+- GIVEN an invalid, unauthorized, duplicate-active, or closed-lot admission request
+- WHEN core rejects it
+- THEN the result is represented by `VEHICLE_REJECTED` and no `VEHICLE_CREATED`, `VEHICLE_WAITING`, entry, exit, finish, or cancellation event is emitted for that request
+- AND it is not added to active requests or active-plate membership
 
-#### Scenario: Core queue drains with only vehicle lifecycle event types
+### Requirement: Event field meanings and population
 
-- GIVEN a run covering admission, contention, and shutdown (including cancelled waiters and completed parked vehicles)
-- WHEN the queue is drained after all admitted vehicles finish
-- THEN every event `type` belongs to `VEHICLE_CREATED`, `VEHICLE_WAITING`, `VEHICLE_ENTERED`, `VEHICLE_EXITED`, `VEHICLE_FINISHED`
-- AND no event type outside this set — including `SIMULATION_STARTED`, `SIMULATION_FINISHED`, or a cancellation-specific type — is present from core
+Core vehicle events MUST carry `vehicle_id` when the request supplies a valid identifier; malformed requests may have `vehicle_id = None`. `plate` is the normalized plate (trimmed and uppercased) when available. `authorized_space_id` identifies the registry-assigned slot and is independent of physical occupancy. `space_id` MUST be populated only for physical entry or release, never merely to report authorization.
 
-#### Scenario: Cancelled waiting vehicle emits the existing FINISHED event
+- `VEHICLE_CREATED`: accepted request; carries its normalized `plate` and `authorized_space_id`; has no physical `space_id` or `waiting_time`.
+- `VEHICLE_WAITING`: accepted request waiting for its authorized slot; carries plate/authorized slot and no physical `space_id` or `waiting_time`.
+- `VEHICLE_ENTERED`: physical occupancy begins; carries occupied `space_id`, authorized slot, and nonnegative `waiting_time` measured from enqueue time to acquisition.
+- `VEHICLE_EXITED`: physical occupancy is released; carries the same `space_id` as entry and the authorized slot; has no `waiting_time`.
+- `VEHICLE_FINISHED`: normal completion after the occupied stay and exit; carries plate/authorized slot and no `space_id` or `waiting_time`.
+- `VEHICLE_CANCELLED`: accepted pending request cancelled by early stop; carries plate/authorized slot and `reason = STOP_REQUESTED`, with no physical `space_id` or `waiting_time`.
+- `VEHICLE_REJECTED`: rejected admission; carries the sanitized request identifier/normalized plate when available, and the authorization slot only when a valid authorized record resolves it. It carries no physical `space_id` or `waiting_time`, and `reason` is one of `UNKNOWN_PLATE`, `NOT_AUTHORIZED`, `DUPLICATE_ACTIVE`, `LOT_CLOSED`, or `INVALID_REQUEST`.
 
-- GIVEN a full lot where a vehicle is waiting and a close call occurs
-- WHEN the close cancels that waiting vehicle
-- THEN that vehicle emits the existing `VEHICLE_FINISHED` event type
-- AND no additional or new event type is emitted for this cancellation
+#### Scenario: Authorized slot is distinct from occupied space
 
-### Requirement: Event field population rules
+- GIVEN an accepted request authorized for slot `k` that is still waiting
+- WHEN its CREATED or WAITING event is observed
+- THEN `authorized_space_id` is `k` and `space_id` is `None`
+- WHEN its ENTERED and EXITED events are observed
+- THEN `space_id` identifies the physical occupied/released slot
 
-The system MUST populate event fields as follows:
+#### Scenario: Entry records wait duration
 
-1. Every core vehicle lifecycle event MUST carry the emitting vehicle in `vehicle_id` (never `None` for core vehicle events).
-2. `VEHICLE_CREATED` MUST NOT carry `space_id` or `waiting_time`.
-3. `VEHICLE_WAITING` MUST NOT carry `space_id` or `waiting_time`.
-4. `VEHICLE_ENTERED` MUST carry `space_id` (the acquired space) and `waiting_time` (never `None`), where `waiting_time` is nonnegative and measures from the vehicle's waiting start until it acquired the space.
-5. `VEHICLE_EXITED` MUST carry `space_id` — the same space the vehicle's `VEHICLE_ENTERED` reported for that vehicle — and MUST NOT carry `waiting_time`.
-6. `VEHICLE_FINISHED` MUST NOT carry `space_id` or `waiting_time`, whether the vehicle finished normally or was cancelled by close while waiting.
+- GIVEN an accepted request that reaches physical occupancy
+- WHEN `VEHICLE_ENTERED` is published
+- THEN `waiting_time` is nonnegative and measures elapsed time from enqueue to acquisition
+- AND EXITED and terminal events have no `waiting_time`
 
-#### Scenario: VEHICLE_ENTERED carries acquired space and waiting time
+### Requirement: Per-request event order and terminal distinction
 
-- GIVEN a vehicle admitted while the lot is full, which later acquires a space
-- WHEN the corresponding `VEHICLE_ENTERED` event is observed
-- THEN `waiting_time` is present and greater than or equal to zero, matching the interval from the vehicle's waiting start to space acquisition
-- AND `vehicle_id` and `space_id` are non-null
+For each accepted request, core MUST publish exactly one causal lifecycle sequence:
 
-#### Scenario: Immediate entry has a nonnegative waiting time
+- Normal completion: `VEHICLE_CREATED` → optional `VEHICLE_WAITING` → `VEHICLE_ENTERED` → `VEHICLE_EXITED` → `VEHICLE_FINISHED`.
+- Early-stop cancellation while pending: `VEHICLE_CREATED` → optional `VEHICLE_WAITING` → `VEHICLE_CANCELLED`.
 
-- GIVEN a vehicle admitted while a space was immediately available
-- WHEN its `VEHICLE_ENTERED` event is observed
-- THEN `waiting_time` is present and greater than or equal to zero (approximately zero for immediate acquisition)
-- AND it is measured from the vehicle's waiting-start point, not from simulated arrival of other vehicles
+`VEHICLE_CANCELLED` MUST represent an accepted request that never parked, and MUST NOT be represented as `VEHICLE_FINISHED`. `VEHICLE_FINISHED` MUST represent only normal completion after a parked stay. Core MUST preserve causal order per request without duplicate transition events.
 
-#### Scenario: Waiting and finished events carry no space or waiting time
+#### Scenario: Normal request completes
 
-- GIVEN any vehicle's lifecycle events are drained from the queue
-- WHEN each event is inspected
-- THEN `VEHICLE_WAITING`, `VEHICLE_FINISHED`, and `VEHICLE_CREATED` have `space_id = None` and `waiting_time = None`
-- AND `vehicle_id` is non-null on each of them
+- GIVEN an accepted request that obtains an authorized slot and completes its stay
+- WHEN its events are observed
+- THEN they appear in CREATED, optional WAITING, ENTERED, EXITED, FINISHED order, each once
 
-#### Scenario: Entry and exit of one vehicle share the same space id
+#### Scenario: Early stop cancels a pending request
 
-- GIVEN a vehicle that entered with `space_id = k` and later exited
-- WHEN its `VEHICLE_EXITED` event is observed
-- THEN `space_id` equals `k` for that same vehicle event pair
-- AND `waiting_time` on the exit event is `None`
+- GIVEN an accepted request still waiting when `close` requests cancellation
+- WHEN core terminalizes that request
+- THEN its final event is `VEHICLE_CANCELLED` with `reason = STOP_REQUESTED`
+- AND it has no ENTERED, EXITED, or FINISHED event
 
-### Requirement: Ordered single-pass lifecycle publication
+### Requirement: Core events precede simulation completion
 
-The system MUST publish, for each accepted vehicle, lifecycle events that reflect its internal state transition order exactly, with no duplicates and no out-of-order entries:
+When Simulator completes a run, it MUST wait for core to drain and publish all terminal events before publishing `SIMULATION_FINISHED`. Thus every core terminal event for that execution is queued before the simulation-finished event.
 
-- Normal cycle: `VEHICLE_CREATED` → (`VEHICLE_WAITING`, only when waiting occurs) → `VEHICLE_ENTERED` → `VEHICLE_EXITED` → `VEHICLE_FINISHED`, each exactly once for a normal single-cycle vehicle.
-- Cancelled-by-close cycle: `VEHICLE_CREATED` → (`VEHICLE_WAITING`, only if observed before close) → `VEHICLE_FINISHED` — with no `VEHICLE_ENTERED` and no `VEHICLE_EXITED` events for the cancelled vehicle.
+#### Scenario: Simulation stop drains accepted requests
 
-The system MUST NOT publish out-of-order combinations such as `VEHICLE_ENTERED` after `VEHICLE_FINISHED` for the same vehicle, or duplicate events for the same lifecycle transition.
-
-#### Scenario: Normal full lifecycle order
-
-- GIVEN a vehicle admitted with a space available and a positive `parking_duration`
-- WHEN it runs to completion
-- THEN events for that vehicle appear in the queue in the order CREATED, ENTERED, EXITED, FINISHED with no `VEHICLE_WAITING` event
-- AND each appears exactly once
-
-#### Scenario: Waiting cycle order
-
-- GIVEN a vehicle admitted while the lot is full, which later acquires a space after a release
-- WHEN it runs to completion
-- THEN events for that vehicle appear in the order CREATED, WAITING, ENTERED, EXITED, FINISHED, with each present exactly once
-- AND no event for that vehicle appears out of this order even under concurrent admission of other vehicles
-#### Scenario: Cancelled waiting vehicle order
-
-- GIVEN a full lot with a waiting vehicle, followed by `close`
-- WHEN that waiting vehicle is cancelled by the close
-- THEN that vehicle's events appear in the order CREATED, WAITING, FINISHED
-- AND no `VEHICLE_ENTERED` or `VEHICLE_EXITED` is emitted for that vehicle after close
+- GIVEN a run containing parked and pending accepted requests
+- WHEN Simulator completes its stop and emits `SIMULATION_FINISHED`
+- THEN all core terminal events for those requests precede `SIMULATION_FINISHED` in the shared queue

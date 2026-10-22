@@ -4,7 +4,7 @@ from queue import Queue
 from time import monotonic, sleep
 
 from core.events import (VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED,
-                        VEHICLE_FINISHED, VEHICLE_WAITING)
+                        VEHICLE_FINISHED, VEHICLE_WAITING, VEHICLE_CANCELLED)
 from core.parking import ParkingLot
 from core.vehicle import Vehicle
 from simulation.authorizations import Authorization, AuthorizationRegistry
@@ -27,7 +27,7 @@ def test_created_entered_exit_finished_event_order():
                                               VEHICLE_EXITED, VEHICLE_FINISHED]
 
 
-def test_close_cancellation_preserves_created_waiting_finished():
+def test_close_cancellation_preserves_created_waiting_cancelled():
     queue = Queue()
     registry = AuthorizationRegistry({"A": Authorization("A", True, 0),
                                       "B": Authorization("B", True, 0)})
@@ -42,8 +42,9 @@ def test_close_cancellation_preserves_created_waiting_finished():
         sleep(.002)
     lot.close()
     assert [e.type for e in queue.queue if e.vehicle_id == 2] == [
-        VEHICLE_CREATED, VEHICLE_WAITING, VEHICLE_FINISHED,
+        VEHICLE_CREATED, VEHICLE_WAITING, VEHICLE_CANCELLED,
     ]
+    assert [e for e in queue.queue if e.vehicle_id == 2][-1].reason == "STOP_REQUESTED"
     assert [e.type for e in queue.queue if e.vehicle_id == 1] == [
         VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED,
     ]

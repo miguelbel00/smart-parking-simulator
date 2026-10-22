@@ -9,9 +9,11 @@ from core.events import (
     SIMULATION_FINISHED,
     SIMULATION_STARTED,
     VEHICLE_ENTERED,
+    VEHICLE_CANCELLED,
     VEHICLE_EXITED,
     VEHICLE_FINISHED,
     VEHICLE_WAITING,
+    VEHICLE_REJECTED,
 )
 
 if TYPE_CHECKING:
@@ -64,6 +66,8 @@ class SimulationMetrics:
                 if event.vehicle_id is not None:
                     self._currently_waiting.add(event.vehicle_id)
                     self._peak_waiting = max(self._peak_waiting, len(self._currently_waiting))
+            elif event.type == VEHICLE_REJECTED:
+                self._rejected += 1
             elif event.type == VEHICLE_ENTERED:
                 if event.waiting_time is not None:
                     self._waiting_times.append(event.waiting_time)
@@ -81,9 +85,9 @@ class SimulationMetrics:
                     self._parking_durations.append(event.timestamp - started_at)
             elif event.type == VEHICLE_FINISHED:
                 self._finished += 1
-                if (event.vehicle_id is not None
-                        and event.vehicle_id not in self._entered_vehicle_ids):
-                    self._cancelled += 1
+                self._currently_waiting.discard(event.vehicle_id)
+            elif event.type == VEHICLE_CANCELLED:
+                self._cancelled += 1
                 self._currently_waiting.discard(event.vehicle_id)
             elif event.type == SIMULATION_STARTED:
                 self._started_at = event.timestamp

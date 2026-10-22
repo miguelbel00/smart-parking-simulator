@@ -24,6 +24,16 @@ class ParkingSnapshot:
     occupied_count: int
     waiting_count: int
     occupied_spaces: tuple[tuple[int, int], ...]
+    active_requests: tuple[ActiveRequestSnapshot, ...] = ()
+
+
+@dataclass(frozen=True)
+class ActiveRequestSnapshot:
+    vehicle_id: int
+    plate: str
+    authorized_space_id: int
+    state: str
+    space_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,12 +90,18 @@ class ParkingLot:
 
     def admit(self, vehicle: Vehicle) -> AdmissionResult:
         from core.vehicle import Vehicle
-
-        if (not isinstance(vehicle, Vehicle) or vehicle.parking is not self
-                or type(vehicle.vehicle_id) is not int or vehicle.vehicle_id <= 0
-                or not isinstance(vehicle.plate, str)
-                or not _valid_duration(getattr(vehicle, "parking_duration", None))):
-            return AdmissionResult(False, "INVALID_REQUEST", getattr(vehicle, "vehicle_id", None), None)
+        try:
+            valid = (isinstance(vehicle, Vehicle) and vehicle.parking is self
+                     and type(vehicle.vehicle_id) is int and vehicle.vehicle_id > 0
+                     and isinstance(vehicle.plate, str)
+                     and _valid_duration(getattr(vehicle, "parking_duration", None)))
+        except BaseException:
+            valid = False
+        if not valid:
+            vehicle_id = _safe_attr(vehicle, "vehicle_id", int)
+            plate = _safe_attr(vehicle, "plate", str)
+            self._queue_rejection(vehicle_id, _normalized_plate(plate), None, "INVALID_REQUEST")
+            return AdmissionResult(False, "INVALID_REQUEST", vehicle_id, None)
         with self._condition:
             reason = None
             authorization = self._registry.lookup(vehicle.plate)
@@ -102,25 +118,55 @@ class ParkingLot:
             elif not self._started:
                 reason = "INVALID_REQUEST"
             if reason:
-                return AdmissionResult(False, reason, vehicle.vehicle_id, vehicle)
-            self._sequence += 1
-            sequence = self._sequence
-            vehicle.plate = authorization.plate
-            self._active_plates.add(authorization.plate)
-            self._active[vehicle.vehicle_id] = vehicle
-            self._seen_vehicle_ids.add(vehicle.vehicle_id)
-            self._pending.append((sequence, vehicle, authorization.space_id, monotonic()))
-            self._queue_event(events.VEHICLE_CREATED, vehicle)
-            self._condition.notify_all()
+                plate = authorization.plate if authorization is not None else _normalized_plate(vehicle.plate)
+                slot = authorization.space_id if authorization is not None and authorization.authorized else None
+                rejection = (vehicle.vehicle_id, vehicle, plate, slot, reason)
+            else:
+                rejection = None
+            if rejection is not None:
+                result = AdmissionResult(False, reason, vehicle.vehicle_id, vehicle)
+            else:
+                result = None
+            if rejection is not None:
+                # Append under the state lock; publication is always outside it.
+                self._queue_rejected_locked(*rejection)
+            else:
+                self._sequence += 1
+                sequence = self._sequence
+                vehicle.plate = authorization.plate
+                self._active_plates.add(authorization.plate)
+                self._active[vehicle.vehicle_id] = vehicle
+                self._seen_vehicle_ids.add(vehicle.vehicle_id)
+                self._pending.append((sequence, vehicle, authorization.space_id, monotonic()))
+                self._queue_event(events.VEHICLE_CREATED, vehicle, authorized_space_id=authorization.space_id)
+                self._condition.notify_all()
         self._flush_events()
-        return AdmissionResult(True, None, vehicle.vehicle_id, vehicle)
+        return result if result is not None else AdmissionResult(True, None, vehicle.vehicle_id, vehicle)
     def snapshot(self) -> ParkingSnapshot:
         with self._condition:
             spaces = tuple(sorted((space, vehicle.vehicle_id) for space, vehicle in self._occupied.items()))
-            return ParkingSnapshot(self.capacity, len(spaces), len(self._pending), spaces)
+            parked = tuple(ActiveRequestSnapshot(v.vehicle_id, v.plate, slot, "PARKED", slot)
+                           for slot, v in sorted(self._occupied.items()))
+            waiting = tuple(ActiveRequestSnapshot(v.vehicle_id, v.plate, slot, "WAITING")
+                            for _, v, slot, _ in self._pending)
+            return ParkingSnapshot(self.capacity, len(spaces), len(self._pending), spaces, parked + waiting)
 
-    def _queue_event(self, kind: str, vehicle: Vehicle, space_id=None, waiting_time=None) -> None:
-        self._outbox.append(events.ParkingEvent(kind, time(), vehicle.vehicle_id, space_id, waiting_time))
+    def _queue_event(self, kind: str, vehicle: Vehicle, space_id=None, waiting_time=None,
+                     authorized_space_id=None, reason=None) -> None:
+        if authorized_space_id is None:
+            auth = self._registry.lookup(_normalized_plate(_safe_attr(vehicle, "plate", str)))
+            authorized_space_id = auth.space_id if auth and auth.authorized else None
+        self._outbox.append(events.ParkingEvent(kind, time(), vehicle.vehicle_id, space_id, waiting_time,
+                                               _normalized_plate(vehicle.plate), authorized_space_id, reason))
+
+    def _queue_rejection(self, vehicle_id, plate, slot, reason):
+        with self._condition:
+            self._queue_rejected_locked(vehicle_id, None, plate, slot, reason)
+        self._flush_events()
+
+    def _queue_rejected_locked(self, vehicle_id, vehicle, plate, slot, reason):
+        self._outbox.append(events.ParkingEvent(events.VEHICLE_REJECTED, time(), vehicle_id,
+                                               None, None, plate, slot, reason))
 
     def _flush_events(self) -> None:
         with self._publish_lock:
@@ -161,8 +207,8 @@ class ParkingLot:
 
                     if self._closed and self._cancel_pending and self._pending:
                         for _, vehicle, _, _ in self._pending:
-                            vehicle._state = "FINISHED"
-                            self._queue_event(events.VEHICLE_FINISHED, vehicle)
+                            vehicle._state = "CANCELLED"
+                            self._queue_event(events.VEHICLE_CANCELLED, vehicle, reason="STOP_REQUESTED")
                             self._active.pop(vehicle.vehicle_id, None)
                             self._active_plates.discard(vehicle.plate)
                         self._pending.clear()
@@ -206,10 +252,10 @@ class ParkingLot:
                 continue
             return entry
         if self._pending:
-            for _, vehicle, _, _ in self._pending:
+            for _, vehicle, slot, _ in self._pending:
                 if vehicle._state == "CREATED":
                     vehicle._state = "WAITING"
-                    self._queue_event(events.VEHICLE_WAITING, vehicle)
+                    self._queue_event(events.VEHICLE_WAITING, vehicle, authorized_space_id=slot)
         return None
 
     def _departure_worker(self) -> None:
@@ -295,3 +341,20 @@ def _valid_duration(value: object) -> bool:
         return math.isfinite(value) and value >= 0
     except (OverflowError, TypeError, ValueError):
         return False
+
+
+def _safe_attr(value, name, expected):
+    try:
+        result = getattr(value, name, None)
+        return result if isinstance(result, expected) and not (expected is int and type(result) is not int) else None
+    except BaseException:
+        return None
+
+
+def _normalized_plate(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return value.strip().upper()
+    except BaseException:
+        return None

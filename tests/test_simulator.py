@@ -4,7 +4,8 @@ from time import monotonic, sleep
 
 import pytest
 
-from core.events import SIMULATION_FINISHED, SIMULATION_STARTED, VEHICLE_CREATED, VEHICLE_FINISHED
+from core.events import (SIMULATION_FINISHED, SIMULATION_STARTED, VEHICLE_CREATED,
+                         VEHICLE_FINISHED, VEHICLE_REJECTED, VEHICLE_CANCELLED)
 from core.parking import ParkingLot
 from simulation.authorizations import Authorization, AuthorizationRegistry, load_authorizations
 from simulation.metrics import MetricsForwardingQueue, SimulationMetrics
@@ -57,6 +58,38 @@ def test_fresh_runs_and_terminal_event_after_drain(monkeypatch):
         assert types.count(VEHICLE_CREATED) == types.count(VEHICLE_FINISHED) == 2
         assert simulator.is_drained()
     assert runs[0][0] is not runs[1][0]
+    assert runs[0][2] is not runs[1][2]
+
+
+def test_rejections_are_counted_only_from_forwarded_event(monkeypatch):
+    from simulation import config
+    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
+    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
+    auth = AuthorizationRegistry({"NO": Authorization("NO", False, None)})
+    simulator, queue, runs = setup_run(["NO"], registry=auth)
+    assert simulator.start()
+    wait_exit(simulator)
+    events = drain(queue)
+    rejected = [item for item in events if item.type == VEHICLE_REJECTED]
+    assert len(rejected) == 1
+    assert rejected[0].reason == "NOT_AUTHORIZED"
+    assert rejected[0].plate == "NO" and rejected[0].space_id is None
+    assert not any(item.type == VEHICLE_CREATED for item in events)
+    stats = simulator.metrics.snapshot()
+    assert (stats["total_generated"], stats["total_admitted"], stats["total_rejected"]) == (1, 0, 1)
+    assert stats["total_finished"] == stats["total_cancelled"] == 0
+
+
+def test_metrics_count_normal_finish_and_cancellation_from_distinct_events():
+    metrics = SimulationMetrics()
+    destination = Queue()
+    queue = MetricsForwardingQueue(destination, metrics)
+    from core.events import ParkingEvent
+    queue.put(ParkingEvent("VEHICLE_FINISHED", 1.0, vehicle_id=1))
+    queue.put(ParkingEvent(VEHICLE_CANCELLED, 2.0, vehicle_id=2, reason="STOP_REQUESTED"))
+    stats = metrics.snapshot()
+    assert stats["total_finished"] == 1
+    assert stats["total_cancelled"] == 1
 
 
 def test_restart_waits_for_producer_to_exit_after_finish_publication(monkeypatch):

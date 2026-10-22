@@ -21,6 +21,10 @@ La API actual es:
   política de cierre descrita en el contrato raíz.
 - `core/events.py` define el dataclass inmutable `ParkingEvent` y los tipos
   de evento compartidos. Core emite eventos del ciclo de vida vehicular.
+- `ParkingEvent` añade `plate`, `authorized_space_id` y `reason` tras los
+  cinco campos previos. REJECTED no crea solicitudes activas; CANCELLED
+  terminaliza pendientes por `STOP_REQUESTED`; FINISHED solo indica salida
+  normal. Snapshots contienen tuplas de vistas inmutables WAITING/PARKED.
 
 ## Concurrencia
 

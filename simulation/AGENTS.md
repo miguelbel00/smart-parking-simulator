@@ -64,6 +64,11 @@ MAX_PARKING_TIME
 
 ## Métricas
 
+`record_generated` y `record_admitted` se registran desde Simulator. Los
+rechazos se cuentan una sola vez al recibir `VEHICLE_REJECTED`. `total_finished`
+cuenta solo `VEHICLE_FINISHED`; `total_cancelled` solo `VEHICLE_CANCELLED`.
+Cada ejecución obtiene una instancia nueva de métricas.
+
 Como mínimo considerar:
 
 - Vehículos creados.
