@@ -84,6 +84,8 @@ def make_app(simulator=None):
     app.card_occupied = SimpleNamespace(update_value=lambda value: None)
     app.card_available = SimpleNamespace(update_value=lambda value: None)
     app.card_waiting = SimpleNamespace(update_value=lambda value: None)
+    app.card_generated = app.card_accepted = app.card_rejected = app.card_entries = app.card_occupied
+    app.card_finished = app.card_cancelled = app.card_occupied
     app.event_log = SimpleNamespace(log=lambda *args: app.logs.append(args))
     app.logs = []
     app.capacity = 5
@@ -101,12 +103,13 @@ def event(kind):
 def test_close_before_first_run_drains_events_without_stop():
     app = make_app()
     app.event_queue.put(event("VEHICLE_CREATED"))
+    app.event_queue.put(event("VEHICLE_CREATED"))
     app._on_close()
     assert app.simulator.stops == 0
     assert app.root.destroyed
     assert app.event_queue.empty()
     assert not app.control_bar.start_enabled
-    assert app.logs[-1][0] == "VEHICLE_CREATED"
+    assert [entry[0] for entry in app.logs] == ["VEHICLE_CREATED", "VEHICLE_CREATED"]
 
 
 def test_close_after_completed_run_needs_no_stop():

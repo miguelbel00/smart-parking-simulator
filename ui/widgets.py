@@ -4,7 +4,7 @@ This module provides graphical components built with Tkinter for:
 - Stat cards (KPI metrics representing Semaphore capacity and counters)
 - Individual parking slots (discrete shared resources)
 - Parking lot slot grid
-- Waiting queue visualizer (threads blocked waiting for resources)
+- Waiting queue visualizer (requests waiting for eligible resources)
 - Concurrency event log terminal (displays events consumed from queue.Queue)
 - Simulation control bar
 """
@@ -41,7 +41,7 @@ class StatCard(tk.Frame):
     """Card widget displaying a KPI metric (title, value, and subtitle).
 
     In OS terms, these cards display the state of shared counters,
-    such as total semaphore capacity, acquired permits, and blocked threads.
+    such as admission counts, current occupancy, and terminal outcomes.
     """
 
     def __init__(
@@ -109,7 +109,7 @@ class ParkingSlotWidget(tk.Frame):
     """Graphical representation of a single parking bay / space.
 
     In OS terms, each slot represents a discrete shared resource unit
-    with mutual exclusion: at most one vehicle thread can hold it at any time.
+    with mutual exclusion: at most one vehicle can occupy it at any time.
     """
 
     def __init__(self, parent: tk.Widget, space_id: int, **kwargs) -> None:
@@ -124,6 +124,7 @@ class ParkingSlotWidget(tk.Frame):
         )
         self.space_id = space_id
         self.occupied_by: int | None = None
+        self.plate: str | None = None
 
         # Space Identifier (e.g., Espacio #1)
         self._lbl_id = tk.Label(
@@ -135,10 +136,10 @@ class ParkingSlotWidget(tk.Frame):
         )
         self._lbl_id.pack(anchor="center")
 
-        # Visual Icon (🅿️ when available, 🚗 when occupied)
+        # ASCII marker avoids platform-dependent emoji rendering.
         self._lbl_icon = tk.Label(
             self,
-            text="🅿️",
+            text="P",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_PRIMARY,
             font=(font_family(self), 24),
@@ -167,26 +168,28 @@ class ParkingSlotWidget(tk.Frame):
         )
         self._lbl_detail.pack(anchor="center", pady=(2, 0))
 
-    def set_occupied(self, vehicle_id: int) -> None:
-        """Mark slot as occupied by a vehicle thread."""
+    def set_occupied(self, vehicle_id: int, plate: str | None = None) -> None:
+        """Mark slot as occupied by a vehicle request."""
         self.occupied_by = vehicle_id
+        self.plate = plate
         self.config(highlightbackground=COLOR_OCCUPIED, highlightthickness=2)
-        self._lbl_icon.config(text="🚗")
+        self._lbl_icon.config(text="AUTO")
         self._lbl_status.config(
             text="OCUPADO",
             bg=COLOR_OCCUPIED_BG,
             fg=COLOR_OCCUPIED,
         )
         self._lbl_detail.config(
-            text=f"Auto #{vehicle_id}",
+            text=f"{plate} (#{vehicle_id})" if plate else f"Auto #{vehicle_id}",
             fg=COLOR_TEXT_PRIMARY,
         )
 
     def set_available(self) -> None:
-        """Mark slot as free when the vehicle thread leaves."""
+        """Mark slot as free when the vehicle leaves."""
         self.occupied_by = None
+        self.plate = None
         self.config(highlightbackground=COLOR_BORDER, highlightthickness=1)
-        self._lbl_icon.config(text="🅿️")
+        self._lbl_icon.config(text="P")
         self._lbl_status.config(
             text="DISPONIBLE",
             bg=COLOR_AVAILABLE_BG,
@@ -226,9 +229,9 @@ class ParkingLotGridWidget(tk.Frame):
         for col_idx in range(self.columns):
             self.grid_columnconfigure(col_idx, weight=1)
 
-    def occupy_slot(self, slot_key: int, vehicle_id: int) -> None:
+    def occupy_slot(self, slot_key: int, vehicle_id: int, plate: str | None = None) -> None:
         """Mark a projected, 1-based display slot as occupied."""
-        self.slots[slot_key].set_occupied(vehicle_id)
+        self.slots[slot_key].set_occupied(vehicle_id, plate)
 
     def free_slot(self, slot_key: int) -> None:
         """Free a projected, 1-based display slot."""
@@ -255,10 +258,10 @@ class ParkingLotGridWidget(tk.Frame):
 
 
 class WaitingQueueWidget(tk.Frame):
-    """Visual lane representing queued threads waiting for a free space.
+    """Visual lane representing requests waiting for an eligible space.
 
-    In OS terms, this visualizes the threads currently in the WAITING / BLOCKED
-    state because the Semaphore has 0 available permits.
+    In OS terms, this visualizes requests in the WAITING / BLOCKED state. A
+    request may wait for capacity or for its authorized space to become free.
     """
 
     def __init__(self, parent: tk.Widget, **kwargs) -> None:
@@ -272,6 +275,7 @@ class WaitingQueueWidget(tk.Frame):
             **kwargs,
         )
         self._vehicles: list[int] = []
+        self._plates: dict[int, str] = {}
 
         # Top Bar Header
         top_bar = tk.Frame(self, bg=COLOR_BG_CARD)
@@ -279,7 +283,7 @@ class WaitingQueueWidget(tk.Frame):
 
         lbl_title = tk.Label(
             top_bar,
-            text="COLA DE ESPERA (Hilos bloqueados esperando Semaphore)",
+            text="COLA DE ESPERA (solicitudes por recurso disponible)",
             bg=COLOR_BG_CARD,
             fg=COLOR_WAITING,
             font=(font_family(self), 9, "bold"),
@@ -304,28 +308,33 @@ class WaitingQueueWidget(tk.Frame):
 
         self._lbl_empty = tk.Label(
             self._items_container,
-            text="No hay vehículos en espera. Todos los hilos tienen recurso asignado.",
+            text="No hay solicitudes en espera.",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
             font=(font_family(self), 9, "italic"),
         )
         self._lbl_empty.pack(anchor="w", pady=4)
 
-    def add_vehicle(self, vehicle_id: int) -> None:
-        """Add vehicle thread ID to waiting lane."""
+    def add_vehicle(self, vehicle_id: int, plate: str | None = None) -> None:
+        """Add request identity and plate to the waiting lane."""
         if vehicle_id not in self._vehicles:
             self._vehicles.append(vehicle_id)
+            self._plates[vehicle_id] = plate or f"Auto #{vehicle_id}"
             self._refresh()
+        elif plate:
+            self._plates[vehicle_id] = plate
 
     def remove_vehicle(self, vehicle_id: int) -> None:
-        """Remove vehicle thread ID once admitted to a slot."""
+        """Remove request identity once it leaves the waiting state."""
         if vehicle_id in self._vehicles:
             self._vehicles.remove(vehicle_id)
+            self._plates.pop(vehicle_id, None)
             self._refresh()
 
     def clear(self) -> None:
         """Clear the waiting lane."""
         self._vehicles.clear()
+        self._plates.clear()
         self._refresh()
 
     def _refresh(self) -> None:
@@ -339,7 +348,7 @@ class WaitingQueueWidget(tk.Frame):
         if not self._vehicles:
             self._lbl_empty = tk.Label(
                 self._items_container,
-                text="No hay vehículos en espera. Todos los hilos tienen recurso asignado.",
+                text="No hay solicitudes en espera.",
                 bg=COLOR_BG_CARD,
                 fg=COLOR_TEXT_MUTED,
                 font=(font_family(self), 9, "italic"),
@@ -361,7 +370,7 @@ class WaitingQueueWidget(tk.Frame):
 
             tk.Label(
                 item,
-                text=f"🚗 #{vid}",
+                text=f"🚗 {self._plates.get(vid, f'Auto #{vid}')} (#{vid})",
                 bg=COLOR_WAITING_BG,
                 fg=COLOR_TEXT_PRIMARY,
                 font=(font_family(self), 9, "bold"),
@@ -540,7 +549,7 @@ class ControlBarWidget(tk.Frame):
         # Start button
         self._btn_start = tk.Button(
             btn_box,
-            text="▶ Iniciar Simulación",
+            text="Iniciar Simulación",
             bg=COLOR_AVAILABLE_BG,
             fg=COLOR_AVAILABLE,
             activebackground=COLOR_AVAILABLE,
@@ -557,7 +566,7 @@ class ControlBarWidget(tk.Frame):
         # Stop button
         self._btn_stop = tk.Button(
             btn_box,
-            text="⏹ Detener",
+            text="Detener",
             bg=COLOR_OCCUPIED_BG,
             fg=COLOR_OCCUPIED,
             activebackground=COLOR_OCCUPIED,

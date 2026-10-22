@@ -7,7 +7,7 @@ This module implements `ParkingApp`, which:
 - Provides start and stop controls to interface with the Simulator.
 
 Operating System Concepts:
-- Producer-Consumer Pattern: Vehicle threads (producers) post events to `queue.Queue`.
+- Producer-Consumer Pattern: Core and simulation workers post events to `queue.Queue`.
   Tkinter on the Main Thread (consumer) polls and processes those events.
 - Tkinter Thread Safety: UI toolkits must never be mutated directly by worker threads;
   instead, synchronization is achieved via message passing through the queue.
@@ -28,6 +28,7 @@ from ui.projection import ParkingProjection
 from ui.widgets import (
     COLOR_AVAILABLE,
     COLOR_BG_PRIMARY,
+    COLOR_INFO,
     COLOR_OCCUPIED,
     COLOR_TEXT_PRIMARY,
     COLOR_WAITING,
@@ -90,45 +91,22 @@ class ParkingApp:
         )
         self.control_bar.pack(fill="x", padx=16, pady=(16, 10))
 
-        # 2. KPI Stat Cards Row (Displays Semaphore state and Counters)
+        # 2. KPI Stat Cards Row (run-local event metrics)
         stats_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
         stats_frame.pack(fill="x", padx=16, pady=(0, 12))
 
-        self.card_capacity = StatCard(
-            stats_frame,
-            title="Capacidad Total",
-            initial_value=str(self.capacity),
-            subtitle="Recursos Semaphore",
-            value_color=COLOR_TEXT_PRIMARY,
-        )
-        self.card_capacity.pack(side="left", fill="both", expand=True, padx=(0, 8))
-
-        self.card_occupied = StatCard(
-            stats_frame,
-            title="Espacios Ocupados",
-            initial_value="0",
-            subtitle="Semáforo consumido",
-            value_color=COLOR_OCCUPIED,
-        )
-        self.card_occupied.pack(side="left", fill="both", expand=True, padx=(0, 8))
-
-        self.card_available = StatCard(
-            stats_frame,
-            title="Espacios Disponibles",
-            initial_value=str(self.capacity),
-            subtitle="Recursos libres",
-            value_color=COLOR_AVAILABLE,
-        )
-        self.card_available.pack(side="left", fill="both", expand=True, padx=(0, 8))
-
-        self.card_waiting = StatCard(
-            stats_frame,
-            title="Cola de Espera",
-            initial_value="0",
-            subtitle="Hilos bloqueados",
-            value_color=COLOR_WAITING,
-        )
-        self.card_waiting.pack(side="left", fill="both", expand=True)
+        for name, title, color in (
+            ("generated", "Generados", COLOR_TEXT_PRIMARY),
+            ("accepted", "Aceptados", COLOR_AVAILABLE),
+            ("rejected", "Rechazados", COLOR_OCCUPIED),
+            ("entries", "Ingresos", COLOR_INFO),
+            ("occupied", "Ocupación actual", COLOR_OCCUPIED),
+            ("finished", "Finalizados", COLOR_INFO),
+            ("cancelled", "Cancelados", COLOR_WAITING),
+        ):
+            card = StatCard(stats_frame, title=title, initial_value="0", value_color=color)
+            card.pack(side="left", fill="both", expand=True, padx=(0, 5))
+            setattr(self, f"card_{name}", card)
 
         # 3. Main Center Area (Split Left / Right)
         center_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
@@ -165,7 +143,7 @@ class ParkingApp:
 
         lbl_os_info = tk.Label(
             footer_frame,
-            text="SO Concept: Semaphore (Capacidad) | Mutex Lock (Asignación) | Queue (Hilos -> UI)",
+            text="SO Concept: Semaphore (Capacidad) | Mutex Lock (Asignación) | Queue (Workers -> UI)",
             bg=COLOR_BG_PRIMARY,
             fg="#64748b",
             font=(font_family(self.root), 8),
@@ -213,7 +191,7 @@ class ParkingApp:
         Attributes follow the team contract defined in AGENTS.md (Section 4):
         - event.type: Event type string (e.g. VEHICLE_ENTERED, VEHICLE_WAITING)
         - event.timestamp: Epoch timestamp
-        - event.vehicle_id: Optional integer ID of the vehicle thread
+        - event.vehicle_id: Optional integer request ID
         - event.space_id: Optional integer ID of the assigned parking slot
         - event.waiting_time: Optional float duration spent in WAITING state
         """
@@ -222,6 +200,10 @@ class ParkingApp:
         vehicle_id = getattr(event, "vehicle_id", None)
         space_id = getattr(event, "space_id", None)
         waiting_time = getattr(event, "waiting_time", None)
+        vehicle_plate = getattr(event, "plate", None)
+        plate = vehicle_plate or f"Auto #{vehicle_id}"
+        authorized_space_id = getattr(event, "authorized_space_id", None)
+        reason = getattr(event, "reason", None)
 
         time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
         slot_key = self.projection.apply_event(event)
@@ -246,52 +228,64 @@ class ParkingApp:
                 self._schedule_restart_check()
             self.event_log.log(
                 event_type,
-                f"Simulación terminada. Total vehículos atendidos: {self.total_finished}.",
+                f"Simulación terminada. Finalizaciones normales: {self.total_finished}.",
                 time_str,
             )
 
-        # 3. OS Concept: Vehicle thread created (state: CREATED)
+        # 3. OS Concept: Vehicle request created (state: CREATED)
         elif event_type == "VEHICLE_CREATED":
-            msg = f"Hilo de Auto #{vehicle_id} creado."
+            msg = f"Solicitud #{vehicle_id} creada: {plate}."
             self.event_log.log(event_type, msg, time_str)
 
-        # 4. OS Concept: Vehicle thread blocked waiting for Semaphore (state: WAITING)
+        # 4. OS Concept: Request waits for an eligible resource (state: WAITING)
         elif event_type == "VEHICLE_WAITING":
             if vehicle_id is not None:
-                self.waiting_lane.add_vehicle(vehicle_id)
+                self.waiting_lane.add_vehicle(vehicle_id, plate)
             self._update_display_counters()
 
             wait_info = f" (espera inicial: {waiting_time:.2f}s)" if waiting_time is not None else ""
-            msg = f"Auto #{vehicle_id} en espera de semáforo libre{wait_info}."
+            destination = (f" para Espacio autorizado #{authorized_space_id + 1}"
+                           if authorized_space_id is not None else "")
+            msg = f"{plate} (#{vehicle_id}) en espera{destination}{wait_info}."
             self.event_log.log(event_type, msg, time_str)
 
-        # 5. OS Concept: Thread acquired Semaphore and was assigned a slot (state: PARKED)
+        # 5. OS Concept: Request acquired a slot (state: PARKED)
         elif event_type == "VEHICLE_ENTERED":
             if vehicle_id is not None:
                 self.waiting_lane.remove_vehicle(vehicle_id)
             if slot_key is not None and vehicle_id is not None:
-                self.parking_grid.occupy_slot(slot_key, vehicle_id)
+                self.parking_grid.occupy_slot(slot_key, vehicle_id, vehicle_plate)
             self._update_display_counters()
 
-            msg = f"Auto #{vehicle_id} obtuvo Semaphore e ingresó al Espacio #{slot_key}."
+            msg = f"{plate} (#{vehicle_id}) ingresó al Espacio #{slot_key}."
             self.event_log.log(event_type, msg, time_str)
 
-        # 6. OS Concept: Thread released slot resource and signaled Semaphore
+        # 6. OS Concept: Request released its slot resource
         elif event_type == "VEHICLE_EXITED":
             if slot_key is not None:
                 self.parking_grid.free_slot(slot_key)
             self._update_display_counters()
 
-            msg = f"Auto #{vehicle_id} liberó Espacio #{slot_key} y señalizó Semaphore."
+            msg = f"{plate} (#{vehicle_id}) salió del Espacio #{slot_key}."
             self.event_log.log(event_type, msg, time_str)
 
-        # 7. OS Concept: Thread terminated execution (state: FINISHED)
+        # 7. OS Concept: Request completed normally (state: FINISHED)
         elif event_type == "VEHICLE_FINISHED":
             if vehicle_id is not None:
                 self.waiting_lane.remove_vehicle(vehicle_id)
             self._update_display_counters()
-            msg = f"Hilo de Auto #{vehicle_id} finalizó su ciclo de vida."
+            msg = f"{plate} (#{vehicle_id}) finalizó normalmente."
             self.event_log.log(event_type, msg, time_str)
+
+        elif event_type == "VEHICLE_REJECTED":
+            self.event_log.log(event_type, f"Solicitud #{vehicle_id} ({plate}) rechazada: {reason or 'motivo no informado'}.", time_str)
+            self._update_display_counters()
+
+        elif event_type == "VEHICLE_CANCELLED":
+            if vehicle_id is not None:
+                self.waiting_lane.remove_vehicle(vehicle_id)
+            self._update_display_counters()
+            self.event_log.log(event_type, f"{plate} (#{vehicle_id}) cancelado mientras esperaba.", time_str)
 
         # Fallback for generic or custom events
         else:
@@ -302,10 +296,16 @@ class ParkingApp:
         """Keep cards synchronized with the projected grid and waiting IDs."""
         self.occupied_count = self.projection.occupied_count
         self.waiting_count = len(self.projection.waiting)
-        self.total_finished = self.projection.finished_count
         self.card_occupied.update_value(self.occupied_count)
-        self.card_available.update_value(self.projection.available_count)
-        self.card_waiting.update_value(self.waiting_count)
+        self.total_finished = self.projection.finished_count
+        self.card_finished.update_value(self.total_finished)
+        metrics = getattr(getattr(self, "simulator", None), "metrics", None)
+        snapshot = metrics.snapshot() if metrics is not None else {}
+        self.card_generated.update_value(snapshot.get("total_generated", 0))
+        self.card_accepted.update_value(snapshot.get("total_admitted", 0))
+        self.card_rejected.update_value(snapshot.get("total_rejected", 0))
+        self.card_entries.update_value(snapshot.get("total_parked", 0))
+        self.card_cancelled.update_value(snapshot.get("total_cancelled", 0))
 
     def _reconcile_snapshot(self, snapshot: ParkingSnapshot) -> None:
         """Refresh displayed occupancy from a safe core snapshot when supplied."""
