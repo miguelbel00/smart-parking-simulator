@@ -8,7 +8,9 @@ from simulation.authorizations import Authorization, AuthorizationRegistry
 import main as entry
 
 
-def test_main_composes_fresh_runs_and_reports_only_latest(monkeypatch, capsys):
+def test_main_composes_fresh_runs_and_reports_only_latest(monkeypatch, capsys, tmp_path):
+    from simulation.audit_logging import AuditSession
+    monkeypatch.setattr(entry, "AuditSession", lambda: AuditSession(tmp_path / "logs"))
     monkeypatch.setattr(entry.config, "PARKING_CAPACITY", 2)
     monkeypatch.setattr(entry.config, "TOTAL_VEHICLES", 1)
     monkeypatch.setattr(entry.config, "MIN_ARRIVAL_TIME", 0)
@@ -65,7 +67,9 @@ def test_main_composes_fresh_runs_and_reports_only_latest(monkeypatch, capsys):
     assert capsys.readouterr().out == observed[1].report() + "\n"
 
 
-def test_main_without_run_does_not_print_statistics(monkeypatch, capsys):
+def test_main_without_run_does_not_print_statistics(monkeypatch, capsys, tmp_path):
+    from simulation.audit_logging import AuditSession
+    monkeypatch.setattr(entry, "AuditSession", lambda: AuditSession(tmp_path / "logs"))
     class FakeApp:
         def __init__(self, event_queue, simulator, capacity):
             pass
@@ -79,6 +83,8 @@ def test_main_without_run_does_not_print_statistics(monkeypatch, capsys):
 
 
 def test_invalid_authorization_file_prevents_run_start(monkeypatch, tmp_path):
+    from simulation.audit_logging import AuditSession
+    monkeypatch.setattr(entry, "AuditSession", lambda: AuditSession(tmp_path / "logs"))
     bad_file = tmp_path / "invalid.json"
     bad_file.write_text('{"vehicles": [}', encoding="utf-8")
     monkeypatch.setattr(entry.config, "AUTHORIZATION_FILE", bad_file)
@@ -97,3 +103,60 @@ def test_invalid_authorization_file_prevents_run_start(monkeypatch, tmp_path):
 
     monkeypatch.setattr(entry, "ParkingApp", FakeApp)
     entry.main()
+
+
+def test_app_error_is_audited_before_shutdown_and_close(monkeypatch, tmp_path, capsys):
+    from simulation.audit_logging import AuditSession
+
+    error = RuntimeError("application failed")
+    cleanup_error = ValueError("shutdown failed")
+    close_error = OSError("close failed")
+    audit = AuditSession(tmp_path / "logs")
+    monkeypatch.setattr(entry, "AuditSession", lambda: audit)
+    order = []
+
+    class FakeSimulator:
+        def __init__(self, **kwargs):
+            pass
+
+        def set_audit(self, session):
+            assert session is audit
+
+        def shutdown(self):
+            order.append("shutdown")
+            raise cleanup_error
+
+    original_close = audit.close
+
+    def tracked_close():
+        order.append("close")
+        assert "exception_type=RuntimeError" in audit.path.read_text(encoding="utf-8")
+        assert audit._records.unfinished_tasks == 0
+        original_close()
+        raise close_error
+
+    audit.close = tracked_close
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self):
+            raise error
+
+    monkeypatch.setattr(entry, "Simulator", FakeSimulator)
+    monkeypatch.setattr(entry, "ParkingApp", FakeApp)
+    import pytest
+    with pytest.raises(RuntimeError) as raised:
+        entry.main()
+
+    assert raised.value is error
+    assert order == ["shutdown", "close"]
+    content = audit.path.read_text(encoding="utf-8")
+    assert content.count("exception_type=RuntimeError") == 1
+    assert "application failed" in content
+    assert "RuntimeError: application failed" in content
+    assert content.count("exception_type=ValueError") == 1
+    assert content.count("shutdown failed") == 1
+    assert "close failed" in capsys.readouterr().err
+    assert audit._records.unfinished_tasks == 0

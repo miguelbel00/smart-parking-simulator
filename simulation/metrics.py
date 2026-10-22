@@ -152,10 +152,20 @@ class MetricsForwardingQueue:
     def __init__(self, destination: Queue, metrics: SimulationMetrics) -> None:
         self._destination = destination
         self._metrics = metrics
+        self._publish_lock = Lock()
+        self._audit = None
+        self._run_id: str | None = None
+
+    def set_audit_context(self, audit, run_id: str) -> None:
+        self._audit = audit
+        self._run_id = run_id
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        self._metrics.record_event(item)
-        self._destination.put(item, block=block, timeout=timeout)
+        with self._publish_lock:
+            self._metrics.record_event(item)
+            self._destination.put(item, block=block, timeout=timeout)
+            if self._audit is not None and self._run_id is not None:
+                self._audit.event(item, self._run_id)
 
 
 def _average(values: list[float]) -> float:

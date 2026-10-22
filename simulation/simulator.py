@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import random
-from threading import Event, Lock, Thread
+import sys
+from threading import Event, Lock, Thread, current_thread
 from time import time
 from typing import Callable, Sequence
 
@@ -26,6 +27,13 @@ class Simulator:
         self._parking = None
         self._drained = True
         self.metrics: SimulationMetrics | None = None
+        self._audit = None
+        self._run_id: str | None = None
+        self._stop_logged = False
+
+    def set_audit(self, audit) -> None:
+        """Attach the app-session audit sink before starting the application."""
+        self._audit = audit
 
     def start(self) -> bool:
         with self._state_lock:
@@ -33,18 +41,37 @@ class Simulator:
                 return False
             if self._thread is not None and not self._drained:
                 return False
-            parking, event_queue, metrics = self._run_factory()
+            try:
+                parking, event_queue, metrics = self._run_factory()
+            except BaseException as error:
+                if self._audit is not None:
+                    self._audit.exception("run_setup", "-", error)
+                raise
+            run_id = self._audit.begin_run() if self._audit is not None else None
+            self._run_id = run_id
+            self._stop_logged = False
+            if hasattr(event_queue, "set_audit_context") and run_id is not None:
+                event_queue.set_audit_context(self._audit, run_id)
             self._stop_requested = Event()
             self._drained = False
             self._parking = parking
             self.metrics = metrics
             try:
                 parking.start()
-                thread = Thread(target=self._run, args=(parking, event_queue, metrics,
-                                                        self._stop_requested), name="simulation-producer")
+                thread = Thread(target=self._run_with_audit, args=(parking, event_queue, metrics,
+                                                                   self._stop_requested, run_id),
+                                name="simulation-producer")
                 thread.start()
-            except BaseException:
-                parking.close(wait=True)
+            except BaseException as start_error:
+                if self._audit is not None:
+                    self._audit.exception("simulator_start", run_id, start_error)
+                try:
+                    parking.close(wait=True)
+                except BaseException as cleanup_error:
+                    if self._audit is not None:
+                        self._audit.exception("startup_cleanup", run_id, cleanup_error)
+                if self._audit is not None:
+                    self._audit.end_run(run_id)
                 self._drained = True
                 self._parking = None
                 raise
@@ -63,8 +90,16 @@ class Simulator:
             # observe LOT_CLOSED. The producer checks this intent before its
             # next generation/admission attempt.
             self._stop_requested.set()
+            if not self._stop_logged and self._audit is not None and self._run_id is not None:
+                self._audit.operation("stop_requested", self._run_id)
+                self._stop_logged = True
         if parking is not None:
-            parking.close(wait=False)
+            try:
+                parking.close(wait=False)
+            except BaseException as error:
+                if self._audit is not None:
+                    self._audit.exception("stop_failure", self._run_id, error)
+                raise
 
     def is_active(self) -> bool:
         with self._state_lock:
@@ -73,6 +108,20 @@ class Simulator:
     def is_drained(self) -> bool:
         with self._state_lock:
             return self._drained
+
+    def shutdown(self) -> None:
+        """Request stop and join the producer before the app audit listener closes."""
+        stop_error = None
+        try:
+            self.stop()
+        except BaseException as error:
+            stop_error = error
+        with self._state_lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join()
+        if stop_error is not None:
+            raise stop_error
 
     def _run(self, parking, event_queue: MetricsForwardingQueue,
              metrics: SimulationMetrics, stop_requested: Event) -> None:
@@ -88,6 +137,9 @@ class Simulator:
                 duration = self._duration_factory()
                 vehicle = Vehicle(vehicle_id, parking, duration, plate)
                 metrics.record_generated()
+                if self._audit is not None and self._run_id is not None:
+                    self._audit.operation("admission_attempt", self._run_id,
+                                          vehicle_id=vehicle_id, plate=plate)
                 result = parking.admit(vehicle)
                 if result.accepted:
                     metrics.record_admitted()
@@ -98,7 +150,39 @@ class Simulator:
             succeeded = True
         finally:
             if not succeeded:
+                primary_error = sys.exc_info()[1]
                 try:
                     parking.close(wait=True)
-                except BaseException:
-                    pass
+                except BaseException as cleanup_error:
+                    if (self._audit is not None
+                            and not _shares_exception_cause(primary_error, cleanup_error)):
+                        self._audit.exception("producer_cleanup", self._run_id, cleanup_error)
+            if self._audit is not None and self._run_id is not None:
+                self._audit.end_run(self._run_id)
+
+    def _run_with_audit(self, parking, event_queue, metrics, stop_requested, run_id) -> None:
+        try:
+            self._run(parking, event_queue, metrics, stop_requested)
+        except BaseException as error:
+            if self._audit is not None:
+                self._audit.exception("producer_uncaught", run_id, error)
+            # The thread exception hook delegates to the previous hook but
+            # avoids writing this same exception a second time.
+            current_thread()._parking_audit_logged = True
+            raise
+
+
+def _shares_exception_cause(first: BaseException | None, second: BaseException) -> bool:
+    """Detect cleanup errors that only repeat the active primary failure."""
+    if first is None:
+        return False
+    first_chain = {id(error) for error in _exception_chain(first)}
+    return any(id(error) in first_chain for error in _exception_chain(second))
+
+
+def _exception_chain(error: BaseException):
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        yield error
+        error = error.__cause__ or error.__context__

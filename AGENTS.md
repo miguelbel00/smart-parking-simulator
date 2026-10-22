@@ -556,3 +556,15 @@ Semaphore o Lock, ya que son parte fundamental del objetivo académico.
   responsibility or changing shared module contracts.
 - Keep this educational application simple and explainable. Do not add
   unconfirmed database features, fields, migrations, or abstraction layers.
+
+## 17. Registro de auditoría
+
+- Cada sesión de la aplicación usa un `QueueHandler`, un `QueueListener` y un
+  archivo UTF-8 único bajo `logs/`; esta cola es independiente de la cola Tk.
+- Los eventos se auditan una sola vez en el adaptador de publicación, sin
+  modificar `ParkingEvent`; cada ejecución tiene un `run_id` propio.
+- La sesión detiene y vacía el listener solo después de detener y unir los
+  trabajadores. Si falla la escritura o el encolado, informa por stderr y
+  marca la auditoría como incompleta; no garantiza persistencia ante fallos.
+- El hook temporal de excepciones conserva y delega al hook anterior. El
+  registro diagnostica errores, no recupera ni repara el motor.

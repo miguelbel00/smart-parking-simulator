@@ -103,3 +103,10 @@ Seguir los requisitos de base de datos y flujo Git del
 [AGENTS.md raíz](../AGENTS.md).
 La persistencia no está asignada a Simulation; no decidir su propiedad,
 integración ni sincronización sin acuerdo del equipo.
+
+## Auditoría
+
+`main.py` posee la sesión de auditoría de aplicación. `MetricsForwardingQueue`
+registra cada evento publicado bajo el `run_id` explícito y serializa el orden
+de métricas, reenvío a Tk y registro. `Simulator` registra intentos de admisión
+y la intención de detención. No agregar `run_id` al evento compartido.
