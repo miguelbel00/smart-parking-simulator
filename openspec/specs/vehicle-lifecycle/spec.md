@@ -60,7 +60,7 @@ The request lifecycle MUST follow one of these paths:
 
 The parking lot MUST use a semaphore to enforce configured capacity and synchronization via its lock/condition to protect shared request and slot state. A semaphore permit is acquired only when physical occupancy is committed and released exactly once on exit. Waiting requests MUST NOT hold permits.
 
-Only one request may occupy a physical slot at a time. Admission MUST respect FIFO by eligibility and strict FIFO among requests for the same authorized slot; a request blocked on one slot MUST NOT prevent progress for an eligible different slot. The active-plate membership MUST prevent duplicate active requests and be released on either normal completion or cancellation.
+Only one request may occupy a physical slot at a time. The academic rule MUST respect arrival order and serve the longest-waiting request first when its authorization and specific slot permit service. The policy when the oldest request's slot is blocked remains unresolved. Current runtime behavior scans eligible requests and maintains strict FIFO among requests for the same authorized slot; it is not the final academic policy decision. The active-plate membership MUST prevent duplicate active requests and be released on either normal completion or cancellation. JSON authorization MUST bind a plate to its specific slot; reassignment is forbidden.
 
 #### Scenario: Capacity remains bounded
 
@@ -78,9 +78,9 @@ Only one request may occupy a physical slot at a time. Admission MUST respect FI
 
 ### Requirement: Graceful lot close
 
-`close(wait=False)` MUST mark the lot closed promptly, reject subsequent admissions, and request cancellation of pending requests while allowing parked requests to complete their stays. It does not join workers or guarantee the queue is drained on return. `close(wait=True)` MUST join the lot's started workers and return only once accepted work has drained; it MUST NOT forcibly terminate workers.
+`close(wait: bool = True, cancel_pending: bool = True)` MUST mark the lot closed and reject subsequent admissions. `cancel_pending=True` requests cancellation of accepted pending requests while allowing parked requests to complete; `cancel_pending=False` allows accepted pending requests to drain normally. `wait=True` joins started workers and returns only after the selected cancellation/drain behavior completes. `wait=False` does not join workers or guarantee that work has drained on return. Workers MUST NOT be forcibly terminated.
 
-Normal/natural close may drain accepted pending requests rather than cancel them. Early-stop cancellation applies to requests pending when cancellation is requested. Parked requests complete normally on either close path.
+The Simulator selects `cancel_pending` from whether an early stop was requested: early stop cancels pending requests, while natural completion drains them. Parked requests complete normally on either path.
 
 #### Scenario: Admission after close is rejected
 
@@ -99,3 +99,19 @@ Normal/natural close may drain accepted pending requests rather than cancel them
 - GIVEN accepted pending and parked requests when `close(wait=True)` is called externally
 - WHEN close returns
 - THEN pending requests have been drained or cancelled according to the close mode, parked requests have completed, and no lot worker remains active
+
+### Requirement: Multiprocessing and IPC remain an explicit academic gap
+
+The completed academic system MUST use real processes and inter-process
+communication. The current lifecycle is implemented with task-oriented threads
+and an in-process queue; it does not satisfy that requirement. Process roles,
+IPC mechanism, and ownership/synchronization of critical state remain pending
+team decisions. Do not introduce an implementation or change public contracts
+through this specification alone.
+
+#### Scenario: Process architecture is agreed before implementation
+
+- GIVEN work to add the mandatory multiprocessing requirement
+- WHEN module and state ownership are designed
+- THEN process responsibilities, IPC, and synchronization are agreed with
+  affected modules before implementation

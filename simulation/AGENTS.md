@@ -5,8 +5,11 @@
 `Simulator` receives an explicit ordered plate sequence and generates
 request-data `Vehicle` instances; it does not choose plates randomly. `main.py`
 validates the authorization JSON before each run and passes its immutable
-registry to `ParkingLot`. Core uses two task workers, FIFO by eligibility and
-strict FIFO among requests for the same authorized slot. Do not add a thread
+registry to `ParkingLot`. Core currently uses two task workers and scans by
+eligibility, with strict FIFO among requests for the same authorized slot. The
+academic arrival/longest-wait rule applies when authorization and that specific
+slot allow service; behavior when the oldest request's slot is blocked remains
+undecided (see the [root protocol](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes)). Do not add a thread
 per vehicle or place admission/dwell waits in a vehicle request.
 
 `simulation/authorizations.py` provides the authorization JSON domain loader.

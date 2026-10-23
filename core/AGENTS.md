@@ -31,7 +31,10 @@ La API actual es:
 - Dos hilos orientados a tareas por lote realizan admisión y salidas/deadlines;
   no crear un hilo por vehículo ni mantener un trabajador durante su estadía.
 - Un `Semaphore` y un `Lock`/`Condition` mantienen capacidad y estado seguros.
-- La admisión respeta FIFO por elegibilidad y FIFO estricto por puesto.
+- El runtime actual admite por elegibilidad y mantiene FIFO estricto por puesto.
+  La regla académica prioriza llegada/espera entre vehículos elegibles con su
+  puesto disponible; qué hacer cuando el más antiguo está bloqueado sigue
+  pendiente. Ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
 - Un `Lock` protege el estado compartido y la asignación de espacios.
 - Evitar asignaciones duplicadas y liberaciones dobles del Semaphore.
 - El cierre temprano cancela solicitudes en espera; el cierre natural drena
@@ -48,3 +51,7 @@ Seguir los requisitos de base de datos y flujo Git del
 [AGENTS.md raíz](../AGENTS.md).
 La persistencia no está asignada a Core: no asumir propiedad, integración ni
 sincronización de la base de datos sin acuerdo del equipo.
+
+El requisito académico de multiprocessing/IPC aún no está implementado. No
+asignar propiedad del estado crítico ni modificar el contrato público/cola de
+eventos sin el acuerdo descrito en el AGENTS.md raíz.

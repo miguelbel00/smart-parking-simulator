@@ -1,8 +1,10 @@
 # Simulador de parqueadero inteligente
 
-Proyecto académico en Python y Tkinter para representar concurrencia,
-sincronización y gestión de recursos compartidos mediante vehículos que se
-ejecutan como hilos.
+Proyecto académico en Python y Tkinter para representar procesos, hilos,
+concurrencia, sincronización y gestión de recursos compartidos. El runtime
+actual representa vehículos como solicitudes de datos coordinadas por hilos
+orientados a tareas; no crea un hilo por vehículo. Multiprocessing e IPC son
+requisitos académicos obligatorios aún pendientes de implementación y diseño.
 
 ## Módulos
 

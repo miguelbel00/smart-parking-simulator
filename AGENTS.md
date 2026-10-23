@@ -4,7 +4,8 @@
 
 Desarrollar un simulador de parqueadero inteligente utilizando Python y Tkinter.
 
-El proyecto debe representar conceptos fundamentales de Sistemas Operativos:
+El requisito académico incluye procesos reales y comunicación entre procesos
+(IPC), además de conceptos fundamentales de Sistemas Operativos:
 
 - Procesos e hilos.
 - Concurrencia.
@@ -19,6 +20,13 @@ Cada vehículo se representa mediante un objeto `Vehicle` que contiene los
 datos de la solicitud; no hereda de `Thread`. Cada ejecución crea un
 trabajador de admisión y otro de vencimientos/salidas en `ParkingLot`, además
 del productor de `Simulator`.
+
+Esta es la implementación actual basada en hilos; todavía no implementa
+multiprocessing ni IPC. Su incorporación es obligatoria, pero siguen pendientes
+de decisión el reparto de responsabilidades entre procesos, el mecanismo IPC y
+la propiedad/sincronización del estado crítico. No presentar la arquitectura
+actual como cumplimiento de ese requisito. El profesor sugirió estudiar
+sesiones de usuario/usuarios concurrentes, pero no exigió ese diseño.
 
 Los espacios del parqueadero representan recursos limitados compartidos
 entre los vehículos.
@@ -170,10 +178,20 @@ los otros módulos.
 
 ### Threads
 
-`ParkingLot` usa dos hilos orientados a tareas por ejecución: admisión y
-vencimientos/salidas. `Simulator` conserva un hilo productor. No agregar
-hilos por vehículo ni ubicar esperas de admisión o permanencia dentro de una
-solicitud. La admisión es FIFO por elegibilidad y FIFO estricto por puesto.
+El runtime actual de `ParkingLot` usa dos hilos orientados a tareas por
+ejecución: admisión y vencimientos/salidas. `Simulator` conserva un hilo
+productor. No agregar hilos por vehículo ni ubicar esperas de admisión o
+permanencia dentro de una solicitud. La arquitectura multiproceso académica
+obligatoria aún debe diseñarse; no implica que cada vehículo tenga su propio
+hilo o proceso.
+
+La regla académica de FIFO respeta el orden de llegada y da prioridad al
+vehículo que lleva más tiempo esperando cuando cumple su autorización y su
+puesto específico está disponible. Sigue pendiente definir qué ocurre si el
+vehículo más antiguo tiene bloqueado su puesto. El runtime actual busca
+solicitudes elegibles y mantiene FIFO estricto por puesto autorizado; no
+considerar ese comportamiento una decisión sobre la política académica aún
+pendiente.
 
 ### Semaphore
 
@@ -200,7 +218,8 @@ Ejemplos:
 
 - Lista de espacios ocupados.
 - Asignación de puestos.
-- Contadores compartidos.
+- Registros de vehículos/placas activas y transiciones de estado.
+- Contadores y estadísticas compartidas.
 - Estadísticas concurrentes.
 
 ### Queue
@@ -568,3 +587,40 @@ Semaphore o Lock, ya que son parte fundamental del objetivo académico.
   marca la auditoría como incompleta; no garantiza persistencia ante fallos.
 - El hook temporal de excepciones conserva y delega al hook anterior. El
   registro diagnostica errores, no recupera ni repara el motor.
+
+La auditoría actual usa colas de logging dentro del proceso. El requisito
+académico de logging concurrente, seguro y trazable debe mantenerse al integrar
+multiprocessing; el diseño compartido de logging todavía no está decidido. El
+registro debe permitir reconstruir solicitudes, validaciones, decisiones de
+admisión, esperas, entradas, salidas y errores, con marcas temporales y contexto
+concurrente suficiente para correlacionar proceso/hilo y ejecución. No afirmar
+que el logging actual cubre todos estos campos sin verificarlo; evitar exponer
+datos sensibles y evitar escritores independientes no sincronizados para el
+estado crítico.
+
+## 18. Protocolo de trabajo y decisiones académicas pendientes
+
+- Diagnosticar el comportamiento actual antes de proponer cambios. Indicar el
+  requisito incumplido y el contrato/módulo afectado; aplicar el cambio mínimo
+  justificado académicamente y evitar refactorizaciones ajenas sin evidencia.
+- Elegir pruebas unitarias, de integración, concurrencia y ciclo de vida
+  apropiadas al cambio. Distinguir inspección estática, pruebas realmente
+  ejecutadas, hipótesis y conclusiones verificadas. Que las pruebas pasen no
+  demuestra por sí solo la ausencia de carreras o interbloqueos.
+- Priorizar corrección académica por encima de estética.
+- No modificar ramas personales cuyo nombre termine en `_edwd3v`, ni
+  reincorporar el experimento descartado `fde3a8e`. Sin autorización, no hacer
+  merge, push, force-push, reset destructivo, borrar ramas ni descartar cambios.
+  Los archivos locales no prueban qué código está publicado en GitHub.
+- Multiprocessing e IPC son requisitos obligatorios aún no implementados. Antes
+  de asignar responsabilidades o cambiar contratos, acordar el reparto entre
+  procesos, el mecanismo de IPC, la propiedad y sincronización del estado crítico,
+  la política FIFO cuando el puesto del más antiguo está bloqueado y el logging
+  seguro/trazable entre procesos. No cambiar el contrato actual de eventos
+  `queue.Queue` ni las APIs públicas unilateralmente. Los procesos deben tener
+  responsabilidades funcionales reales, no ser procesos decorativos; evitar
+  escritores independientes del estado crítico salvo que exista sincronización
+  explícita y una propiedad de estado acordada.
+- Los requisitos de procesos reales no convierten en obligatorio el diseño de
+  sesiones de usuario concurrentes; esa posibilidad fue solo sugerida para
+  estudio.

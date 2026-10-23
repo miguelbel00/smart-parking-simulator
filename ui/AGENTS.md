@@ -2,12 +2,15 @@
 
 ## Integración actual
 
-Core representa vehículos como datos de solicitud y ejecuta trabajadores
-orientados a tareas con FIFO por elegibilidad y FIFO estricto entre solicitudes
-del mismo puesto autorizado. `AdmissionResult` y sus motivos de rechazo están
-conectados al runtime; rechazos emiten `VEHICLE_REJECTED` y pendientes
-cancelados por cierre temprano emiten `VEHICLE_CANCELLED`. La UI sigue siendo solo
-consumidora de los eventos compartidos y no administra la admisión.
+Core representa vehículos como datos de solicitud y actualmente ejecuta
+trabajadores orientados a tareas. Su búsqueda de puestos elegibles y FIFO
+estricto dentro de cada puesto autorizado describen el runtime, no la política
+académica aún pendiente para el caso en que el puesto del vehículo más antiguo
+esté bloqueado. `AdmissionResult` y sus motivos de rechazo están conectados al
+runtime; rechazos emiten `VEHICLE_REJECTED` y pendientes cancelados por cierre
+temprano emiten `VEHICLE_CANCELLED`. La UI sigue siendo solo consumidora de los
+eventos compartidos y no administra la admisión. Multiprocessing/IPC, requisito
+académico obligatorio, aún no está implementado; ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
 
 ## Responsable
 
@@ -38,7 +41,9 @@ Implementar:
 Tkinter solamente puede ser actualizado desde el hilo principal.
 
 
-Nunca actualizar widgets desde hilos trabajadores, incluidos los hilos de tareas.
+Nunca actualizar widgets desde hilos trabajadores ni procesos secundarios.
+La comunicación entre procesos, cuando se diseñe, no habilita llamadas Tkinter
+fuera del hilo principal.
 
 
 ## Comunicación

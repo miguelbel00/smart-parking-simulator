@@ -23,6 +23,17 @@ The system MUST define frozen dataclass `ParkingEvent` with fields in this order
 
 Core MUST publish vehicle events through its supplied event queue. The UI consumes that shared queue; workers MUST NOT update Tkinter directly.
 
+The current event transport is an in-process `queue.Queue`, not IPC. The
+academic requirement for real multiprocessing and IPC is mandatory but not
+implemented; do not alter this queue contract or event payload without
+agreement on process ownership and transport.
+
+The authorization JSON MUST be validated as a complete registry before
+workers start, and each plate MUST remain bound to its configured specific
+slot. Duplicate active plates MUST be rejected; their registration is released
+consistently when the request finishes or is cancelled. These admission
+outcomes use the existing event contract and do not authorize reassignment.
+
 #### Scenario: Payload cannot be mutated
 
 - GIVEN a constructed `ParkingEvent`
@@ -100,3 +111,21 @@ When Simulator completes a run, it MUST wait for core to drain and publish all t
 - GIVEN a run containing parked and pending accepted requests
 - WHEN Simulator completes its stop and emits `SIMULATION_FINISHED`
 - THEN all core terminal events for those requests precede `SIMULATION_FINISHED` in the shared queue
+
+### Requirement: Concurrent audit is safe and traceable
+
+The academic system MUST provide concurrent logging that is safe and traceable
+across its processes. The current application audit uses a `QueueHandler`, a
+`QueueListener`, and a unique UTF-8 file per application session, separate from
+the Tk event queue; that describes the present in-process runtime and does not
+establish multiprocessing-safe logging. Cross-process logging ownership and
+synchronization remain pending design decisions. Event auditing MUST remain
+single-pass at the publication adapter and MUST NOT require changing
+`ParkingEvent` fields solely to add a run identifier.
+
+Trace records MUST make requests, validation, admission decisions, waits,
+entries, exits, and errors reconstructable with timestamps and enough
+process/thread/run context to correlate concurrent activity. Logging MUST
+avoid exposing sensitive data and MUST NOT let independent unsynchronized
+writers mutate critical parking state. The current logger's coverage of every
+required trace detail has not been established by this specification update.
