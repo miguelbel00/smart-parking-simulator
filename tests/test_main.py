@@ -130,9 +130,10 @@ def test_app_error_is_audited_before_shutdown_and_close(monkeypatch, tmp_path, c
 
     def tracked_close():
         order.append("close")
-        assert "exception_type=RuntimeError" in audit.path.read_text(encoding="utf-8")
-        assert audit._records.unfinished_tasks == 0
         original_close()
+        content = audit.path.read_text(encoding="utf-8")
+        assert "exception_type=RuntimeError" in content
+        assert audit._records.unfinished_tasks == 0
         raise close_error
 
     audit.close = tracked_close
