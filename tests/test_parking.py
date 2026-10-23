@@ -110,6 +110,90 @@ def test_same_slot_fifo_and_progress_on_other_slot():
     assert entries.index(1) < entries.index(2)
 
 
+def test_three_same_slot_requests_enter_in_fifo_order_across_releases():
+    q = Queue()
+    lot = make_lot(1, [(f"P{i}", True, 0) for i in range(1, 4)], q)
+    lot.start()
+    vehicles = [request(lot, i, f"P{i}", .04) for i in range(1, 4)]
+    try:
+        assert all(lot.admit(vehicle).accepted for vehicle in vehicles)
+        until(lambda: lot.snapshot().waiting_count == 2)
+        lot.close(cancel_pending=False)
+        events = list(q.queue)
+        entered = [event.vehicle_id for event in events if event.type == VEHICLE_ENTERED]
+        assert entered == [1, 2, 3]
+        assert len(set(entered)) == len(entered)
+        assert all(vehicle.state == "FINISHED" for vehicle in vehicles)
+        assert lot.snapshot().occupied_count <= lot.capacity
+    finally:
+        lot.close()
+
+
+def test_oldest_eligible_request_is_selected_before_later_eligible_request():
+    entered_blocked = Event()
+    release_entered = Event()
+
+    class PausingEntryQueue(Queue):
+        def put(self, item, *args, **kwargs):
+            result = super().put(item, *args, **kwargs)
+            if item.type == VEHICLE_ENTERED and item.vehicle_id == 1:
+                entered_blocked.set()
+                assert release_entered.wait(5)
+            return result
+
+    q = PausingEntryQueue()
+    records = [("BLOCKER", True, 2), ("OLDER", True, 0), ("LATER", True, 1)]
+    lot = make_lot(3, records, q)
+    lot.start()
+    vehicles = [request(lot, 1, "BLOCKER", .05),
+                request(lot, 2, "OLDER", .01),
+                request(lot, 3, "LATER", .01)]
+    results = []
+    threads = []
+
+    def admit(vehicle):
+        results.append(lot.admit(vehicle))
+
+    try:
+        blocker_thread = Thread(target=admit, args=(vehicles[0],))
+        blocker_thread.start()
+        threads.append(blocker_thread)
+        assert entered_blocked.wait(2)
+        until(lambda: lot.snapshot().occupied_count == 1)
+
+        older_thread = Thread(target=admit, args=(vehicles[1],))
+        older_thread.start()
+        threads.append(older_thread)
+        until(lambda: lot.snapshot().waiting_count == 1)
+
+        later_thread = Thread(target=admit, args=(vehicles[2],))
+        later_thread.start()
+        threads.append(later_thread)
+        until(lambda: lot.snapshot().waiting_count == 2)
+
+        # Both requests are accepted and eligible for distinct free slots
+        # before the admission worker resumes its selection cycle.
+        snapshot = lot.snapshot()
+        assert snapshot.occupied_count == 1
+        assert {item.vehicle_id for item in snapshot.active_requests} == {1, 2, 3}
+    finally:
+        release_entered.set()
+        for thread in threads:
+            thread.join(2)
+        lot.close(cancel_pending=False)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 3 and all(result.accepted for result in results)
+    events = list(q.queue)
+    entered = [event.vehicle_id for event in events if event.type == VEHICLE_ENTERED]
+    assert entered == [1, 2, 3]
+    terminals = [event.vehicle_id for event in events
+                 if event.type in (VEHICLE_FINISHED, VEHICLE_CANCELLED)]
+    assert sorted(terminals) == [1, 2, 3]
+    assert len(set(terminals)) == 3
+    assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+
+
 def test_close_cancels_waiting_and_drains_committed_occupancy():
     q = Queue()
     lot = make_lot(1, [("A", True, 0), ("B", True, 0)], q)
@@ -125,6 +209,63 @@ def test_close_cancels_waiting_and_drains_committed_occupancy():
     assert [event.type for event in waiting_events] == [VEHICLE_CREATED, "VEHICLE_WAITING", VEHICLE_CANCELLED]
     assert waiting_events[-1].reason == "STOP_REQUESTED"
     assert lot._semaphore._value == 1
+
+
+def test_early_close_cancels_all_pending_once_and_finishes_occupant():
+    q = Queue()
+    records = [(f"P{i}", True, 0) for i in range(1, 5)]
+    lot = make_lot(1, records, q)
+    lot.start()
+    vehicles = [request(lot, i, f"P{i}", .06) for i in range(1, 5)]
+    try:
+        assert all(lot.admit(vehicle).accepted for vehicle in vehicles)
+        until(lambda: lot.snapshot().waiting_count == 3)
+        lot.close(wait=False)
+        lot.close(wait=True)
+        events = list(q.queue)
+        terminals = [event for event in events
+                     if event.type in (VEHICLE_FINISHED, VEHICLE_CANCELLED)]
+        assert len(terminals) == 4
+        assert len({event.vehicle_id for event in terminals}) == 4
+        assert sum(event.type == VEHICLE_FINISHED for event in terminals) == 1
+        assert sum(event.type == VEHICLE_CANCELLED for event in terminals) == 3
+        assert all(event.reason == "STOP_REQUESTED" for event in terminals
+                   if event.type == VEHICLE_CANCELLED)
+        assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+        cancelled_plates = {vehicle.plate for vehicle in vehicles[1:]}
+        assert cancelled_plates.isdisjoint(lot._active_plates)
+        # The lot is closed, so public admit() cannot demonstrate plate reuse;
+        # this white-box invariant confirms cancellation released those plates.
+    finally:
+        lot.close()
+
+
+def test_natural_close_drains_multiple_pending_with_one_terminal_each():
+    q = Queue()
+    records = [(f"P{i}", True, 0) for i in range(1, 5)]
+    lot = make_lot(1, records, q)
+    lot.start()
+    vehicles = [request(lot, i, f"P{i}", .03) for i in range(1, 5)]
+    try:
+        assert all(lot.admit(vehicle).accepted for vehicle in vehicles)
+        until(lambda: lot.snapshot().waiting_count == 3)
+        until(lambda: any(event.type == VEHICLE_FINISHED and event.vehicle_id == 1
+                          for event in list(q.queue)))
+        replacement = request(lot, 5, "P1", .01)
+        assert lot.admit(replacement).accepted
+        lot.close(cancel_pending=False)
+        terminals = [event for event in list(q.queue)
+                     if event.type in (VEHICLE_FINISHED, VEHICLE_CANCELLED)]
+        assert [event.vehicle_id for event in terminals] == [1, 2, 3, 4, 5]
+        assert all(event.type == VEHICLE_FINISHED for event in terminals)
+        assert len({event.vehicle_id for event in terminals}) == 5
+        assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+        events = list(q.queue)
+        assert sum(event.type == VEHICLE_FINISHED and event.vehicle_id == 5
+                   for event in events) == 1
+        assert replacement.state == "FINISHED"
+    finally:
+        lot.close()
 
 
 def test_invalid_request_and_vehicle_is_not_thread():
