@@ -174,7 +174,22 @@ class ParkingApp:
 
         Acts as the consumer in the Producer-Consumer pattern.
         """
-        while True:
+        processed = 0
+        limit = 128
+        if self.simulator is not None and hasattr(self.simulator, "poll_results"):
+            for name, run_id, error in self.simulator.poll_results():
+                if name == "ERROR":
+                    self.control_bar.set_pending(f"ERROR: {error}")
+                    self.event_log.log("ENGINE_ERROR", str(error), datetime.now().strftime("%H:%M:%S"))
+                elif name == "SHUTDOWN_COMPLETE":
+                    self._shutdown_complete = True
+                elif name == "CLEANUP_COMPLETE":
+                    self._cleanup_complete = True
+                elif name == "START_ACCEPTED":
+                    # This acknowledges the command only; SIMULATION_STARTED
+                    # remains the authoritative visible lifecycle event.
+                    pass
+        while processed < limit:
             try:
                 event = self.event_queue.get_nowait()
             except queue.Empty:
@@ -183,7 +198,8 @@ class ParkingApp:
                 return False
 
             self._dispatch_event(event)
-        return True
+            processed += 1
+        return processed < limit
 
     def _dispatch_event(self, event: Any) -> None:
         """Dispatch a single ParkingEvent to update relevant visual components.
@@ -320,7 +336,7 @@ class ParkingApp:
         if self.simulator is not None:
             if hasattr(self.simulator, "start"):
                 if self.simulator.start():
-                    self.control_bar.set_running()
+                    self.control_bar.set_pending("INICIANDO")
                 else:
                     self.control_bar.set_pending("INICIO RECHAZADO")
                     self.event_log.log(
@@ -363,14 +379,28 @@ class ParkingApp:
         self._closing = True
         self._close_started_at = time.monotonic()
         self.control_bar.set_pending("CERRANDO: esperando vehículos")
-        if self.simulator is not None and self.simulator.is_active():
+        if self.simulator is not None and hasattr(self.simulator, "shutdown_async"):
+            self.simulator.shutdown_async()
+        elif self.simulator is not None and self.simulator.is_active():
             self.simulator.stop()
         self._check_shutdown()
 
     def _check_shutdown(self) -> None:
         """Destroy only after the background thread and its lot have both drained."""
         queue_drained = self._process_events()
-        if self.simulator is None or (
+        if self.simulator is not None and hasattr(self.simulator, "shutdown_complete"):
+            if self.simulator.shutdown_complete and queue_drained:
+                self._shutdown_complete = True
+                self.root.destroy()
+                return
+            if getattr(self.simulator, "cleanup_complete", False) and queue_drained:
+                self.control_bar.set_pending("ERROR: proceso detenido; auditoría/ejecución incompleta")
+                self._shutdown_complete = True
+                self.root.destroy()
+                return
+            if self.simulator.error is not None:
+                self.control_bar.set_pending(f"ERROR: shutdown incomplete: {self.simulator.error}")
+        elif self.simulator is None or (
             not self.simulator.is_active() and self.simulator.is_drained()
         ):
             if queue_drained:

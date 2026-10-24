@@ -168,6 +168,21 @@ def test_failed_close_never_destroys_even_after_thread_exit_and_warning(monkeypa
     assert app.root.destroyed
 
 
+def test_failed_run_closes_only_after_adapter_confirms_cleanup():
+    simulator = FakeSimulator(active=True, drained=False)
+    simulator.error = RuntimeError("transport failed")
+    simulator.cleanup_complete = False
+    simulator.shutdown_complete = False
+    app = make_app(simulator)
+    app._on_close()
+    app._process_events = lambda: True
+    app.root.tick()
+    assert not app.root.destroyed
+    simulator.cleanup_complete = True
+    app.root.tick()
+    assert app.root.destroyed
+
+
 def test_warning_never_allows_destroy_while_run_is_active(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr("ui.interface.time.monotonic", lambda: clock[0])
@@ -228,6 +243,17 @@ def test_refused_start_is_visible_and_not_retried():
     app.root.tick()
     assert simulator.starts == 1
     assert app.control_bar.start_enabled
+
+
+def test_start_waits_for_simulation_started_event_before_running():
+    app = make_app()
+    app.simulator.poll_results = lambda: [("START_ACCEPTED", "run-1", None)]
+    app._start_simulation()
+    app._process_events()
+    assert app.control_bar.status == "INICIANDO"
+    assert not app.control_bar.stop_enabled
+    app._dispatch_event(event("SIMULATION_STARTED"))
+    assert app.control_bar.stop_enabled
 
 
 def test_pending_restart_poll_does_not_reenable_controls_during_close():
