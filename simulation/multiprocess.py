@@ -110,11 +110,13 @@ def _engine(command_queue, output_queue, transport_failed) -> None:
     shutdown = False
     while not shutdown:
         command = command_queue.get()
+        _reap_finished(active)
         try:
             validate_message(command)
             name = command["name"]
             run_id = command["run_id"]
             if name == "SHUTDOWN":
+                _reap_finished(active)
                 for simulator in tuple(active.values()):
                     simulator.stop()
                 for simulator in tuple(active.values()):
@@ -172,6 +174,13 @@ def _engine(command_queue, output_queue, transport_failed) -> None:
             _put_bounded(output_queue, {"v": 1, "kind": "failure", "run_id": command.get("run_id"),
                                         "name": "ENGINE_FAILED", "error": "WORKER_FAILED"})
             raise
+
+
+def _reap_finished(active: dict[str, Simulator]) -> None:
+    """Drop only simulators whose parking workers and producer have exited."""
+    for run_id, simulator in tuple(active.items()):
+        if simulator.is_drained() and not simulator.is_active():
+            del active[run_id]
 
 
 def _reply(command: dict[str, Any], status: str, reason: str | None = None) -> dict[str, Any]:
@@ -232,13 +241,16 @@ class MultiprocessController:
         if any(existing not in self._terminal_received for existing in self._runs):
             raise RuntimeError("a run is already active")
         if run_id is None:
+            # IDs remain unique for this controller lifetime, including supplied IDs.
             self._run_sequence += 1
+            while f"run-{self._run_sequence}" in self._runs:
+                self._run_sequence += 1
             run_id = f"run-{self._run_sequence}"
+        elif run_id in self._runs:
+            raise RuntimeError("run ID has already been used")
         if self._audit is not None:
             self._audit.begin_run(run_id)
             self._audit.operation("run_requested", run_id)
-        if run_id in self._runs and run_id not in self._terminal_received:
-            raise RuntimeError("run is already active")
         self._runs.add(run_id)
         self._terminal[run_id] = set()
         self._created[run_id] = set()

@@ -1,9 +1,11 @@
 from simulation.ipc_protocol import parking_event_from_message, parking_event_to_message
 from simulation.multiprocess import MultiprocessController
 import time
+import gc
+import weakref
 import pytest
-from queue import Full, Queue
-from simulation.multiprocess import _Publisher
+from queue import Empty, Full, Queue
+from simulation.multiprocess import _Publisher, _reap_finished
 from simulation.audit_logging import AuditSession
 
 
@@ -22,6 +24,30 @@ def payload():
             {"plate": "ABC-1", "authorized": True, "space_id": 0},
         ]},
     }
+
+
+def test_reaper_removes_only_drained_inactive_simulators():
+    class Stub:
+        def __init__(self, drained, active):
+            self.drained = drained
+            self.active = active
+
+        def is_drained(self):
+            return self.drained
+
+        def is_active(self):
+            return self.active
+
+    safe = Stub(True, False)
+    active = Stub(True, True)
+    not_drained = Stub(False, False)
+    simulators = {"safe": safe, "active": active, "not-drained": not_drained}
+    safe_ref = weakref.ref(safe)
+    _reap_finished(simulators)
+    assert simulators == {"active": active, "not-drained": not_drained}
+    del safe
+    gc.collect()
+    assert safe_ref() is None
 
 
 def test_spawn_engine_runs_simulation_and_publishes_ordered_terminal_events():
@@ -115,6 +141,29 @@ def test_sequential_spawn_runs_share_audited_parent_session(tmp_path, monkeypatc
     run_ids = []
     controller.start_engine()
     try:
+        first = controller.start(payload(), run_id="run-1")
+        run_id = first
+        run_ids.append(first)
+        deadline = time.monotonic() + 10
+        while True:
+            message = controller.get(timeout=max(.01, deadline - time.monotonic()))
+            if (message.get("kind") == "event" and message["run_id"] == first
+                    and message["name"] == "SIMULATION_FINISHED"):
+                break
+            assert time.monotonic() < deadline, "timed out waiting for simulation finish"
+        assert controller._finished >= {first}
+        assert confirms[-1] == (first, True)
+
+        # Previously supplied IDs are permanently reserved; rejected reuse
+        # must not start another audit run or send a child command.
+        audit_begins = sum("operation=run_requested" in line for line in audit.path.read_text(encoding="utf-8").splitlines())
+        request_before = controller._request
+        with pytest.raises(RuntimeError, match="already been used"):
+            controller.start(payload(), run_id=first)
+        assert controller._request == request_before
+        assert sum("operation=run_requested" in line for line in audit.path.read_text(encoding="utf-8").splitlines()) == audit_begins
+
+        # The auto-generated sequence skips run-1 because it was supplied.
         for _ in range(2):
             run_id = controller.start(payload())
             run_ids.append(run_id)
@@ -129,8 +178,8 @@ def test_sequential_spawn_runs_share_audited_parent_session(tmp_path, monkeypatc
             assert controller._finished >= {run_id}
             assert confirms[-1] == (run_id, True)
 
-        assert len(confirms) == 2
-        assert len(set(run_ids)) == 2
+        assert len(confirms) == 3
+        assert len(set(run_ids)) == 3
         assert controller._finished >= set(run_ids)
     finally:
         controller.shutdown()
@@ -143,7 +192,71 @@ def test_sequential_spawn_runs_share_audited_parent_session(tmp_path, monkeypatc
     finish_records = [line for line in records
                       if "record_kind=event" in line
                       and "event_type=SIMULATION_FINISHED" in line]
-    assert len(finish_records) == 2
+    assert len(finish_records) == 3
+    assert {line.split("run_id=", 1)[1].split("\t", 1)[0]
+            for line in finish_records} == set(run_ids)
+
+
+def test_multiple_spawn_runs_stop_waiter_and_audit_all_terminals(tmp_path):
+    audit = AuditSession(tmp_path)
+    controller = MultiprocessController(capacity=1, queue_size=32, audit=audit)
+    controller.start_engine()
+    run_ids = []
+
+    def receive_until(predicate, timeout=20):
+        deadline = time.monotonic() + timeout
+        received = []
+        while time.monotonic() < deadline:
+            try:
+                message = controller.get(timeout=max(.01, deadline - time.monotonic()))
+            except Empty:
+                break
+            received.append(message)
+            if predicate(message):
+                return received
+        pytest.fail(f"timed out waiting for expected child message; received={received!r}")
+
+    try:
+        for run_id in ("multi-1", "multi-2"):
+            actual_id = controller.start(payload(), run_id=run_id)
+            run_ids.append(actual_id)
+            receive_until(lambda message: message.get("kind") == "event"
+                          and message["run_id"] == actual_id
+                          and message["name"] == "SIMULATION_FINISHED")
+            assert actual_id in controller._finished
+
+        data = payload()
+        data["config"].update(total_vehicles=1, min_arrival_time=10,
+                              max_arrival_time=10)
+        stopped_run = controller.start(data, run_id="multi-3")
+        run_ids.append(stopped_run)
+        controller.stop(stopped_run)
+        terminals = receive_until(
+            lambda message: message.get("kind") == "event"
+            and message["run_id"] == stopped_run
+            and message["name"] == "SIMULATION_FINISHED"
+        )
+        run_events = {
+            message["seq"]: message["name"]
+            for message in terminals
+            if message.get("kind") == "event"
+            and message["run_id"] == stopped_run
+        }
+        assert list(run_events.values()) == ["SIMULATION_STARTED", "SIMULATION_FINISHED"]
+        assert stopped_run in controller._finished
+    finally:
+        if controller.is_alive():
+            controller.shutdown()
+            controller.join(10)
+        audit.close()
+
+    assert not controller.is_alive()
+    assert audit.audit_complete
+    records = audit.path.read_text(encoding="utf-8").splitlines()
+    finish_records = [line for line in records
+                      if "record_kind=event" in line
+                      and "event_type=SIMULATION_FINISHED" in line]
+    assert len(finish_records) == 3
     assert {line.split("run_id=", 1)[1].split("\t", 1)[0]
             for line in finish_records} == set(run_ids)
 
