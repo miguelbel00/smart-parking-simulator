@@ -35,7 +35,7 @@ class Simulator:
         """Attach the app-session audit sink before starting the application."""
         self._audit = audit
 
-    def start(self) -> bool:
+    def start(self, run_id: str | None = None) -> bool:
         with self._state_lock:
             if self._thread is not None and self._thread.is_alive():
                 return False
@@ -47,7 +47,7 @@ class Simulator:
                 if self._audit is not None:
                     self._audit.exception("run_setup", "-", error)
                 raise
-            run_id = self._audit.begin_run() if self._audit is not None else None
+            run_id = (run_id if run_id is not None else self._audit.begin_run()) if self._audit is not None else run_id
             self._run_id = run_id
             self._stop_logged = False
             if hasattr(event_queue, "set_audit_context") and run_id is not None:

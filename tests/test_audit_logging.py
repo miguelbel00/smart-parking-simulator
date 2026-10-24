@@ -354,3 +354,65 @@ def test_shutdown_joins_producer_even_when_stop_raises(tmp_path, monkeypatch):
     assert all(not lot._admission_thread.is_alive() and not lot._departure_thread.is_alive()
                for lot in lots)
     audit.close()
+def test_confirm_barrier_waits_for_file_handler_and_flushes(tmp_path):
+    audit = AuditSession(tmp_path)
+    audit.operation("before_barrier", "run-1")
+    assert audit.confirm(timeout=1)
+    assert "operation=before_barrier" in audit.path.read_text(encoding="utf-8")
+    audit.close(timeout=1)
+    assert audit.audit_complete
+
+
+def test_confirm_detects_writer_failure_before_barrier_completes(tmp_path, monkeypatch):
+    audit = AuditSession(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    original = audit._file_handler.emit
+
+    def failing_emit(record):
+        if getattr(record, "operation", None) == "slow":
+            entered.set()
+            release.wait(1)
+            audit._mark_failed("test writer", OSError("injected failure"))
+            return
+        original(record)
+
+    monkeypatch.setattr(audit._file_handler, "emit", failing_emit)
+    audit.operation("slow", "run-1")
+    assert entered.wait(1)
+    result = []
+    waiter = threading.Thread(target=lambda: result.append(audit.confirm(timeout=1)))
+    waiter.start()
+    release.set()
+    waiter.join(2)
+    assert not waiter.is_alive()
+    assert result == [False]
+    assert audit.audit_failed
+    audit.close(timeout=1)
+
+
+def test_close_timeout_marks_audit_incomplete_without_unbounded_join(tmp_path, monkeypatch):
+    audit = AuditSession(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    original = audit._file_handler.emit
+    file_stream = audit._file_handler.stream
+
+    def blocked(record):
+        entered.set()
+        release.wait(1)
+        original(record)
+
+    monkeypatch.setattr(audit._file_handler, "emit", blocked)
+    audit.operation("blocked", "run-1")
+    assert entered.wait(1)
+    with pytest.raises(TimeoutError, match="listener did not stop"):
+        audit.close(timeout=.01)
+    assert audit.audit_failed
+    assert not audit.audit_complete
+    release.set()
+    audit.close(timeout=1)
+    assert not audit._listener_thread.is_alive()
+    assert file_stream.closed
+    assert audit._file_handler.stream is None
+    assert not audit.audit_complete

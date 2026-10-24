@@ -21,7 +21,7 @@ def config():
 
 
 def start_payload():
-    return {"config": config(), "authorization": {"vehicles": [
+    return {"config": config(), "plate_sequence": ["ABC-1", "NO-1"], "authorization": {"vehicles": [
         {"plate": "ABC-1", "authorized": True, "space_id": 0},
         {"plate": "NO-1", "authorized": False, "space_id": None},
     ]}}
@@ -213,6 +213,13 @@ def test_start_payload_validates_config_and_authorization_shape():
         mutate(payload)
         with pytest.raises(ProtocolError):
             validate_start_payload(payload)
+
+
+def test_start_preserves_ordered_duplicate_plate_sequence_independent_of_total():
+    payload = start_payload()
+    payload["plate_sequence"] = ["NO-1", "ABC-1", "NO-1"]
+    assert payload["config"]["total_vehicles"] == 2
+    assert validate_start_payload(payload)["plate_sequence"] == ["NO-1", "ABC-1", "NO-1"]
 
 
 def test_start_accepts_long_plate_within_message_bound():

@@ -7,6 +7,7 @@ import logging.handlers
 import queue
 import sys
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +20,16 @@ _FIELDS = (
     "event_time", "vehicle_id", "plate", "authorized_space_id", "space_id",
     "reason", "threadName", "processName", "exception_type", "traceback",
 )
+_BARRIER_TIMEOUT = 2.0
+
+
+class _BarrierHandler(logging.Handler):
+    """Acknowledge queue barriers only after the preceding file handler ran."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        signal = getattr(record, "_audit_barrier", None)
+        if signal is not None:
+            signal.set()
 
 
 def _utc_millis(value: float | None = None) -> str:
@@ -38,6 +49,8 @@ class _AuditFileHandler(logging.FileHandler):
         super().__init__(filename, encoding="utf-8", delay=False)
 
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "_audit_barrier", None) is not None:
+            return
         try:
             super().emit(record)
             self.flush()
@@ -72,13 +85,17 @@ class AuditSession:
         self._records: queue.Queue = queue.Queue()
         self._failed = False
         self._closed = False
+        self._stop_requested = False
         self._active_run_id: str | None = None
         self._logger = logging.Logger(f"parking.audit.{uuid.uuid4()}", logging.INFO)
         self._queue_handler = _AuditQueueHandler(self._records, self)
         self._logger.addHandler(self._queue_handler)
         self._file_handler = _AuditFileHandler(self.path, self)
         self._file_handler.setFormatter(logging.Formatter("\t".join(f"{name}=%({name})s" for name in _FIELDS)))
-        self._listener = logging.handlers.QueueListener(self._records, self._file_handler)
+        self._barrier_handler = _BarrierHandler()
+        self._listener = logging.handlers.QueueListener(
+            self._records, self._file_handler, self._barrier_handler
+        )
         self._previous_hook = threading.excepthook
         self._hook = self._thread_exception
         threading.excepthook = self._hook
@@ -100,9 +117,9 @@ class AuditSession:
         with self._lock:
             return self._failed
 
-    def begin_run(self) -> str:
+    def begin_run(self, run_id: str | None = None) -> str:
         with self._lock:
-            run_id = str(uuid.uuid4())
+            run_id = run_id or str(uuid.uuid4())
             self._active_run_id = run_id
             return run_id
 
@@ -124,6 +141,22 @@ class AuditSession:
         self._log("ERROR", "exception", run_id, operation=operation,
                   exception_type=type(error).__name__, traceback="".join(
                       traceback.format_exception(type(error), error, error.__traceback__)))
+
+    def audit_record(self, message: dict[str, Any]) -> None:
+        """Write a validated child-originated IPC audit record in the parent."""
+        payload = message["payload"]
+        values = {key: payload[key] for key in (
+            "operation", "record_kind", "event_type", "vehicle_id", "plate",
+            "authorized_space_id", "space_id", "reason", "exception_type", "error",
+        ) if key in payload}
+        operation = values.pop("operation", message["name"])
+        error = values.pop("error", None)
+        if error is not None:
+            values["traceback"] = error
+        self._log("ERROR" if message["name"] == "ERROR" else "INFO",
+                  "child_audit", message["run_id"],
+                  operation=operation, event_time=_utc_millis(message["timestamp"]),
+                  **values)
 
     def _log(self, level: str, kind: str, run_id: str | None, **values: Any) -> None:
         fields = dict.fromkeys(_FIELDS, "-")
@@ -169,27 +202,63 @@ class AuditSession:
         except BaseException:
             pass
 
-    def close(self) -> None:
+    def confirm(self, timeout: float = _BARRIER_TIMEOUT) -> bool:
+        """Wait until all previously enqueued records have reached the file handler."""
+        if self.audit_failed:
+            return False
+        barrier = threading.Event()
+        record = logging.LogRecord(self._logger.name, logging.INFO, __file__, 0, "", (), None)
+        record._audit_barrier = barrier
+        try:
+            self._records.put(record, timeout=max(0.0, timeout))
+        except BaseException as error:
+            self._mark_failed("audit barrier enqueue", error)
+            return False
+        if not barrier.wait(max(0.0, timeout)):
+            self._mark_failed("audit barrier timeout", TimeoutError("audit listener barrier timed out"))
+            return False
+        return not self.audit_failed
+
+    def close(self, timeout: float = _BARRIER_TIMEOUT) -> None:
         with self._lock:
             if self._closed:
                 return
-        # The caller must drain Simulator/ParkingLot workers before this point.
-        self._logger.removeHandler(self._queue_handler)
-        self._queue_handler.close()
+            stop_requested = self._stop_requested
+            if not stop_requested:
+                # The caller must drain Simulator/ParkingLot workers before this point.
+                self._logger.removeHandler(self._queue_handler)
+                self._queue_handler.close()
         stop_error = None
         try:
-            self._listener.stop()
+            # QueueListener.stop() joins without a timeout. Send its sentinel
+            # once, then allow a later close() to retry only the bounded join.
+            deadline = time.monotonic() + max(0.0, timeout)
+            if not stop_requested:
+                while True:
+                    try:
+                        self._records.put(self._listener._sentinel, timeout=min(.05, max(0.0, deadline - time.monotonic())))
+                        with self._lock:
+                            self._stop_requested = True
+                        break
+                    except queue.Full:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("audit listener queue remained full")
+            self._listener_thread.join(max(0.0, deadline - time.monotonic()))
+            if self._listener_thread.is_alive():
+                raise TimeoutError("audit listener did not stop")
         except BaseException as error:
             stop_error = error
             self._mark_failed("listener shutdown", error)
         if threading.excepthook is self._hook:
             threading.excepthook = self._previous_hook
-        try:
-            self._file_handler.flush()
-        except BaseException as error:
-            self._mark_failed("final flush", error)
-        self._file_handler.close()
-        with self._lock:
-            self._closed = True
+        if not self._listener_thread.is_alive():
+            try:
+                self._file_handler.flush()
+            except BaseException as error:
+                self._mark_failed("final flush", error)
+            self._file_handler.close()
+        if not self._listener_thread.is_alive():
+            with self._lock:
+                self._closed = True
         if stop_error is not None:
             raise stop_error

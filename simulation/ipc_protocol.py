@@ -7,8 +7,10 @@ effective; SIMULATION_FINISHED means normal completion only. Each run has its
 own run_id (engine-scoped messages use ``None``). Replies echo their command so
 the validator can check structural scope. The controller must still correlate
 the exact request_id and run_id across messages; this stateless validator does
-not match replies to requests. Sequence numbers are
-nonnegative publication labels, not enforced ordering or causality. Vehicle
+not match replies to requests. Event and audit ``seq`` fields are validated as
+nonnegative integers only. The controller checks continuity and order among
+messages it receives; this stateless validator does not guarantee monotonicity,
+delivery, or causality. Vehicle
 terminal events precede normal finish, but a fatal crash may prevent
 ENGINE_FAILED delivery. STOP requests a run stop; SHUTDOWN requests engine
 shutdown.
@@ -115,9 +117,9 @@ def _schema(message: dict[str, Any], required: set[str], optional: set[str]) -> 
 def validate_start_payload(payload: Any) -> dict[str, Any]:
     """Validate START config and authorization records without loading files."""
     _primitive(payload)
-    if type(payload) is not dict or set(payload) != {"config", "authorization"}:
+    if type(payload) is not dict or set(payload) != {"config", "authorization", "plate_sequence"}:
         _fail("invalid START payload")
-    config, authorization = payload["config"], payload["authorization"]
+    config, authorization, plate_sequence = payload["config"], payload["authorization"], payload["plate_sequence"]
     if type(config) is not dict or set(config) != CONFIG_FIELDS:
         _fail("invalid START config fields")
     for value in config.values():
@@ -127,6 +129,10 @@ def validate_start_payload(payload: Any) -> dict[str, Any]:
         _fail("capacity and total_vehicles must be positive")
     if config["min_arrival_time"] > config["max_arrival_time"] or config["min_parking_time"] > config["max_parking_time"]:
         _fail("invalid config range")
+    if type(plate_sequence) is not list or any(
+        not isinstance(plate, str) or not plate.strip() for plate in plate_sequence
+    ):
+        _fail("invalid plate sequence")
     if type(authorization) is not dict or set(authorization) != {"vehicles"} or type(authorization["vehicles"]) is not list:
         _fail("invalid authorization payload")
     plates: set[str] = set()
