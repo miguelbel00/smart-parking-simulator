@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from threading import Lock
+import multiprocessing
+import os
+from threading import Lock, current_thread
 from typing import TYPE_CHECKING, Any
 
 from core.events import (
@@ -161,11 +163,34 @@ class MetricsForwardingQueue:
         self._run_id = run_id
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
+        # Direct Simulator events are generated and published on this caller.
+        self._put(item, block, timeout, _current_origin())
+
+    def put_with_origin(self, item: Any, origin: dict[str, Any],
+                        block: bool = True, timeout: float | None = None) -> None:
+        """Forward private core provenance without changing the event object."""
+        self._put(item, block, timeout, origin)
+
+    def _put(self, item: Any, block: bool, timeout: float | None,
+             origin: dict[str, Any] | None) -> None:
         with self._publish_lock:
             self._metrics.record_event(item)
-            self._destination.put(item, block=block, timeout=timeout)
+            put_with_origin = getattr(self._destination, "put_with_origin", None)
+            if origin is not None and callable(put_with_origin):
+                put_with_origin(item, origin, block=block, timeout=timeout)
+            else:
+                self._destination.put(item, block=block, timeout=timeout)
             if self._audit is not None and self._run_id is not None:
-                self._audit.event(item, self._run_id)
+                audit_origin = ({"origin_process_id": origin["process_id"],
+                                 "origin_process_name": origin["process_name"],
+                                 "origin_thread_name": origin["thread_name"]}
+                                if origin is not None else None)
+                self._audit.event(item, self._run_id, origin=audit_origin)
+
+
+def _current_origin() -> dict[str, Any]:
+    return {"process_id": os.getpid(), "process_name": multiprocessing.current_process().name,
+            "thread_name": current_thread().name}
 
 
 def _average(values: list[float]) -> float:

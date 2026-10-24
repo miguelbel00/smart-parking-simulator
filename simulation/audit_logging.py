@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import multiprocessing
+import os
 import queue
 import sys
 import threading
@@ -18,7 +20,8 @@ from typing import Any
 _FIELDS = (
     "timestamp", "level", "run_id", "record_kind", "operation", "event_type",
     "event_time", "vehicle_id", "plate", "authorized_space_id", "space_id",
-    "reason", "threadName", "processName", "exception_type", "traceback",
+    "reason", "threadName", "processName", "origin_process_id", "origin_process_name",
+    "origin_thread_name", "exception_type", "traceback",
 )
 _BARRIER_TIMEOUT = 2.0
 
@@ -41,6 +44,14 @@ def _safe(value: Any) -> str:
     if value is None:
         return "-"
     return str(value).replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+
+def _origin() -> dict[str, Any]:
+    return {
+        "origin_process_id": os.getpid(),
+        "origin_process_name": multiprocessing.current_process().name,
+        "origin_thread_name": threading.current_thread().name,
+    }
 
 
 class _AuditFileHandler(logging.FileHandler):
@@ -128,19 +139,19 @@ class AuditSession:
             if self._active_run_id == run_id:
                 self._active_run_id = None
 
-    def event(self, event: Any, run_id: str) -> None:
+    def event(self, event: Any, run_id: str, *, origin: dict[str, Any] | None = None) -> None:
         self._log("INFO", "event", run_id, event_type=event.type,
                   event_time=_utc_millis(event.timestamp), vehicle_id=event.vehicle_id,
                   plate=event.plate, authorized_space_id=event.authorized_space_id,
-                  space_id=event.space_id, reason=event.reason)
+                   space_id=event.space_id, reason=event.reason, **(origin or {}))
 
     def operation(self, operation: str, run_id: str, *, vehicle_id=None, plate=None) -> None:
-        self._log("INFO", "operation", run_id, operation=operation, vehicle_id=vehicle_id, plate=plate)
+        self._log("INFO", "operation", run_id, operation=operation, vehicle_id=vehicle_id, plate=plate, **_origin())
 
     def exception(self, operation: str, run_id: str | None, error: BaseException) -> None:
         self._log("ERROR", "exception", run_id, operation=operation,
                   exception_type=type(error).__name__, traceback="".join(
-                      traceback.format_exception(type(error), error, error.__traceback__)))
+                      traceback.format_exception(type(error), error, error.__traceback__)), **_origin())
 
     def audit_record(self, message: dict[str, Any]) -> None:
         """Write a validated child-originated IPC audit record in the parent."""
@@ -148,7 +159,9 @@ class AuditSession:
         values = {key: payload[key] for key in (
             "operation", "record_kind", "event_type", "vehicle_id", "plate",
             "authorized_space_id", "space_id", "reason", "exception_type", "error",
+            "origin_process_id", "origin_process_name", "origin_thread_name",
         ) if key in payload}
+        origin = {key: values.pop(key) for key in ("origin_process_id", "origin_process_name", "origin_thread_name") if key in values}
         operation = values.pop("operation", message["name"])
         error = values.pop("error", None)
         if error is not None:
@@ -156,7 +169,7 @@ class AuditSession:
         self._log("ERROR" if message["name"] == "ERROR" else "INFO",
                   "child_audit", message["run_id"],
                   operation=operation, event_time=_utc_millis(message["timestamp"]),
-                  **values)
+                  **values, **origin)
 
     def _log(self, level: str, kind: str, run_id: str | None, **values: Any) -> None:
         fields = dict.fromkeys(_FIELDS, "-")

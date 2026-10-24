@@ -200,13 +200,15 @@ def validate_message(message: Any) -> dict[str, Any]:
         elif "reason" in message:
             _fail("accepted reply cannot have reason")
     elif kind == "event":
-        _schema(message, common | {"seq", "name", "payload"}, set())
+        _schema(message, common | {"seq", "name", "payload"}, {"origin"})
         _identifier(message["run_id"], "run_id")
         if type(message["seq"]) is not int or message["seq"] < 0:
             _fail("invalid event sequence")
         if not isinstance(message["name"], str) or message["name"] not in EVENTS:
             _fail("unknown event")
         _validate_event_data(message["payload"], message["name"])
+        if "origin" in message:
+            _validate_origin(message["origin"])
     elif kind == "audit":
         _schema(message, common | {"seq", "name", "timestamp", "payload"}, set())
         _identifier(message["run_id"], "run_id", nullable=True)
@@ -214,6 +216,14 @@ def validate_message(message: Any) -> dict[str, Any]:
             _fail("invalid audit sequence or timestamp")
         if not isinstance(message["name"], str) or message["name"] not in AUDIT_NAMES or type(message["payload"]) is not dict:
             _fail("invalid audit record")
+        origin_fields = {"origin_process_id", "origin_process_name", "origin_thread_name"}
+        present = origin_fields & set(message["payload"])
+        if present and present != origin_fields:
+            _fail("incomplete audit origin")
+        if present:
+            _validate_origin({"process_id": message["payload"]["origin_process_id"],
+                              "process_name": message["payload"]["origin_process_name"],
+                              "thread_name": message["payload"]["origin_thread_name"]})
     elif kind == "failure":
         _schema(message, common | {"name", "error"}, {"request_id"})
         _identifier(message["run_id"], "run_id", nullable=True)
@@ -281,12 +291,28 @@ def _validate_event_data(data: Any, name: str) -> None:
             _fail(f"{name} requires plate")
 
 
-def parking_event_to_message(event: ParkingEvent, run_id: str, seq: int) -> dict[str, Any]:
+def _validate_origin(origin: Any) -> None:
+    fields = {"process_id", "process_name", "thread_name"}
+    if type(origin) is not dict or set(origin) != fields:
+        _fail("invalid event origin fields")
+    if type(origin["process_id"]) is not int or origin["process_id"] < 1:
+        _fail("invalid origin process id")
+    for field in ("process_name", "thread_name"):
+        if not isinstance(origin[field], str) or not origin[field].strip() or len(origin[field]) > 128:
+            _fail(f"invalid origin {field}")
+
+
+def parking_event_to_message(event: ParkingEvent, run_id: str, seq: int,
+                             origin: dict[str, Any] | None = None) -> dict[str, Any]:
     """Serialize every ParkingEvent field into a validated event message."""
     if not isinstance(event, ParkingEvent):
         _fail("event must be ParkingEvent")
     data = {field: getattr(event, field) for field in EVENT_FIELDS}
-    return validate_message({"v": PROTOCOL_VERSION, "kind": "event", "run_id": run_id, "seq": seq, "name": event.type, "payload": data})
+    message = {"v": PROTOCOL_VERSION, "kind": "event", "run_id": run_id,
+               "seq": seq, "name": event.type, "payload": data}
+    if origin is not None:
+        message["origin"] = origin
+    return validate_message(message)
 
 
 def parking_event_from_message(message: Any) -> ParkingEvent:

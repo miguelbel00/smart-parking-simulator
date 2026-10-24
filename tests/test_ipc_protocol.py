@@ -156,6 +156,39 @@ def test_parking_event_round_trip_preserves_all_fields():
     assert set(message["payload"]) == {"type", "timestamp", "vehicle_id", "space_id", "waiting_time", "plate", "authorized_space_id", "reason"}
 
 
+def test_event_origin_is_optional_for_compatibility_and_validated_when_present():
+    message = parking_event_to_message(ParkingEvent("SIMULATION_STARTED", 1.0), "run-1", 0)
+    assert "origin" not in validate_message(message)
+    message["origin"] = {"process_id": 123, "process_name": "parking-engine", "thread_name": "parking-admission"}
+    assert validate_message(message)["origin"]["process_id"] == 123
+    for invalid in (
+        {"process_id": 0, "process_name": "p", "thread_name": "t"},
+        {"process_id": 123, "process_name": "", "thread_name": "t"},
+        {"process_id": 123, "process_name": "p"},
+    ):
+        message["origin"] = invalid
+        with pytest.raises(ProtocolError):
+            validate_message(message)
+
+
+def test_audit_origin_metadata_is_optional_but_all_fields_are_required_when_present():
+    message = {"v": 1, "kind": "audit", "run_id": "run-1", "seq": 0,
+               "name": "REQUEST", "timestamp": 1.0, "payload": {"operation": "admission_attempt"}}
+    assert validate_message(message) is message
+    message["payload"].update(origin_process_id=123, origin_process_name="parking-engine",
+                              origin_thread_name="simulation-producer")
+    assert validate_message(message) is message
+    for metadata in (
+        {"origin_process_id": 123},
+        {"origin_process_id": 0, "origin_process_name": "parking-engine",
+         "origin_thread_name": "simulation-producer"},
+        {"origin_process_id": 123, "origin_process_name": "", "origin_thread_name": "simulation-producer"},
+    ):
+        invalid = {**message, "payload": {"operation": "admission_attempt", **metadata}}
+        with pytest.raises(ProtocolError):
+            validate_message(invalid)
+
+
 @pytest.mark.parametrize("event", [
     ParkingEvent("VEHICLE_CREATED", 1, 1, plate="A-1", authorized_space_id=2),
     ParkingEvent("VEHICLE_WAITING", 1, 1, plate="A-1", authorized_space_id=2),

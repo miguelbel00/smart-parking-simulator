@@ -7,6 +7,7 @@ import pytest
 from queue import Empty, Full, Queue
 from simulation.multiprocess import _Publisher, _reap_finished
 from simulation.audit_logging import AuditSession
+import multiprocessing as mp
 
 
 def payload():
@@ -24,6 +25,39 @@ def payload():
             {"plate": "ABC-1", "authorized": True, "space_id": 0},
         ]},
     }
+
+
+def _raise_from_child_producer(output_queue, producer_entered, test_payload):
+    from simulation import config
+    from core.parking import ParkingLot
+    from simulation.authorizations import Authorization, AuthorizationRegistry
+    from simulation.metrics import MetricsForwardingQueue, SimulationMetrics
+    from simulation.multiprocess import _ChildAudit, _Publisher
+    from simulation.simulator import Simulator
+
+    record = test_payload["authorization"]["vehicles"][0]
+    registry = AuthorizationRegistry({
+        record["plate"]: Authorization(record["plate"], record["authorized"], record["space_id"])
+    })
+    config.MIN_ARRIVAL_TIME = 0
+    config.MAX_ARRIVAL_TIME = 0
+    publisher = _Publisher(output_queue, "exception-run")
+    metrics = SimulationMetrics()
+
+    def run_factory():
+        forwarding = MetricsForwardingQueue(publisher, metrics)
+        parking = ParkingLot(test_payload["config"]["capacity"], forwarding, registry)
+        return parking, forwarding, metrics
+
+    def fail_duration():
+        producer_entered.set()
+        raise ValueError("controlled producer failure")
+
+    simulator = Simulator(run_factory, test_payload["plate_sequence"], duration_factory=fail_duration)
+    simulator.set_audit(_ChildAudit(publisher))
+    simulator.start(run_id="exception-run")
+    producer_entered.wait(10)
+    simulator.shutdown()
 
 
 def test_reaper_removes_only_drained_inactive_simulators():
@@ -60,7 +94,25 @@ def test_spawn_engine_runs_simulation_and_publishes_ordered_terminal_events():
             message = controller.get(timeout=10)
             if message.get("kind") == "event":
                 assert message["run_id"] == run_id
-                received.append(parking_event_from_message(message).type)
+                event = parking_event_from_message(message)
+                received.append(event.type)
+                origin = message["origin"]
+                assert set(origin) == {"process_id", "process_name", "thread_name"}
+                assert type(origin["process_id"]) is int
+                assert type(origin["process_name"]) is str
+                assert type(origin["thread_name"]) is str
+                assert origin["process_id"] == controller._process.pid
+                expected_thread = {
+                    "SIMULATION_STARTED": "simulation-producer",
+                    "SIMULATION_FINISHED": "simulation-producer",
+                    "VEHICLE_CREATED": "simulation-producer",
+                    "VEHICLE_WAITING": "parking-admission",
+                    "VEHICLE_ENTERED": "parking-admission",
+                    "VEHICLE_EXITED": "parking-departures",
+                    "VEHICLE_FINISHED": "parking-departures",
+                }
+                if event.type in expected_thread:
+                    assert origin["thread_name"] == expected_thread[event.type]
                 if message["name"] == "SIMULATION_FINISHED":
                     break
         assert received[0] == "SIMULATION_STARTED"
@@ -115,12 +167,108 @@ def test_child_audit_records_are_forwarded_to_parent_session(tmp_path):
         assert f"run_id={run_id}" in contents
         assert "admission_attempt" in contents
         assert "operation=admission_attempt" in contents
+        admission = next(line for line in contents.splitlines()
+                         if "operation=admission_attempt" in line)
+        assert f"origin_process_id={controller._process.pid}" in admission
+        assert f"origin_process_name=parking-engine" in admission
+        assert "origin_thread_name=simulation-producer" in admission
+        assert f"processName={__import__('multiprocessing').current_process().name}" in admission
+        assert f"origin_process_id={controller._process.pid}" != f"origin_process_id={__import__('os').getpid()}"
+        # Provenance is captured before the Core outbox can defer publication.
+        event_line = next(line for line in contents.splitlines()
+                          if "event_type=VEHICLE_ENTERED" in line)
+        assert f"origin_process_id={controller._process.pid}" in event_line
+        assert "origin_process_name=parking-engine" in event_line
+        assert "origin_thread_name=parking-admission" in event_line
+        assert f"processName={__import__('multiprocessing').current_process().name}" in event_line
+        assert f"origin_process_id={controller._process.pid}" != f"origin_process_id={__import__('os').getpid()}"
+        exit_line = next(line for line in contents.splitlines()
+                         if "event_type=VEHICLE_EXITED" in line)
+        assert f"origin_process_id={controller._process.pid}" in exit_line
+        assert "origin_process_name=parking-engine" in exit_line
+        assert "origin_thread_name=parking-departures" in exit_line
+        assert "processName=MainProcess" in exit_line
+        assert "origin_process_id=<Thread" not in exit_line
+        assert "origin_thread_name=<Thread" not in exit_line
+        finished_line = next(line for line in contents.splitlines()
+                             if "event_type=VEHICLE_FINISHED" in line)
+        assert "origin_thread_name=parking-departures" in finished_line
+        started = next(line for line in contents.splitlines()
+                       if "event_type=SIMULATION_STARTED" in line)
+        assert f"origin_process_id={controller._process.pid}" in started
+        assert "origin_thread_name=simulation-producer" in started
     finally:
         if not audit.audit_complete:
             audit.close()
         controller.shutdown()
         controller.get(timeout=10)
         controller.join(10)
+
+
+def test_spawn_child_producer_exception_preserves_origin_and_parent_writer(tmp_path):
+    context = mp.get_context("spawn")
+    output = context.Queue()
+    producer_entered = context.Event()
+    process = context.Process(target=_raise_from_child_producer,
+                              args=(output, producer_entered, payload()), name="audit-test-child")
+    audit = AuditSession(tmp_path)
+    controller = MultiprocessController(capacity=1, audit=audit)
+    try:
+        process.start()
+        messages = []
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                message = output.get(timeout=.2)
+            except Empty:
+                if not process.is_alive():
+                    break
+                continue
+            messages.append(message)
+            if message.get("kind") == "audit" and message.get("name") == "ERROR":
+                break
+        if process.exitcode is None:
+            process.join(max(0, deadline - time.monotonic()))
+        process.join(10)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+        errors = [message for message in messages
+                  if message.get("kind") == "audit" and message.get("name") == "ERROR"]
+        assert errors, messages
+        message = errors[0]
+        assert message["kind"] == "audit"
+        assert message["name"] == "ERROR"
+        assert message["payload"]["record_kind"] == "exception"
+        assert message["payload"]["operation"] == "producer_uncaught"
+        assert message["payload"]["exception_type"] == "ValueError"
+        assert message["payload"]["origin_process_id"] == process.pid
+        assert message["payload"]["origin_process_name"] == process.name
+        assert message["payload"]["origin_thread_name"] == "simulation-producer"
+        assert type(message["payload"]["origin_process_id"]) is int
+        assert all(type(message["payload"][key]) is str for key in
+                   ("origin_process_name", "origin_thread_name"))
+        for audit_message in messages:
+            if audit_message.get("kind") == "audit":
+                controller._handle_audit(audit_message)
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(10)
+        output.close()
+        output.join_thread()
+        audit.close()
+
+    assert audit.audit_complete
+    record = next(line for line in audit.path.read_text(encoding="utf-8").splitlines()
+                  if "operation=producer_uncaught" in line)
+    assert "level=ERROR" in record
+    assert "operation=producer_uncaught" in record
+    assert "exception_type=ValueError" in record
+    assert f"origin_process_id={process.pid}" in record
+    assert f"origin_process_name={process.name}" in record
+    assert "origin_thread_name=simulation-producer" in record
+    assert "processName=MainProcess" in record
+    assert "threadName=MainThread" in record
 
 
 def test_sequential_spawn_runs_share_audited_parent_session(tmp_path, monkeypatch):
@@ -263,11 +411,13 @@ def test_multiple_spawn_runs_stop_waiter_and_audit_all_terminals(tmp_path):
 
 def test_simulation_finish_requires_audit_barrier_and_preserves_finished_compatibility(tmp_path):
     from core.events import ParkingEvent
+    from simulation.ipc_protocol import validate_message
 
     audit = AuditSession(tmp_path)
     controller = MultiprocessController(capacity=1, audit=audit)
     event = ParkingEvent("SIMULATION_FINISHED", time.time())
     message = parking_event_to_message(event, "run-barrier", 0)
+    assert validate_message(message) is message
     controller._handle_event(message)
     assert controller._terminal_received == {"run-barrier"}
     assert controller._finished == {"run-barrier"}

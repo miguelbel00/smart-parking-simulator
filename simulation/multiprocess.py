@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import queue
+import threading
 import time
 import traceback
 from threading import Lock
@@ -23,6 +25,11 @@ from simulation.metrics import MetricsForwardingQueue, SimulationMetrics
 from simulation.simulator import Simulator
 
 
+def _origin() -> dict[str, Any]:
+    return {"process_id": os.getpid(), "process_name": mp.current_process().name,
+            "thread_name": threading.current_thread().name}
+
+
 class _Publisher:
     """Serialize all process event publications before using the bounded IPC queue."""
 
@@ -38,9 +45,13 @@ class _Publisher:
         self.failed = False
 
     def put(self, event, block: bool = True, timeout: float | None = None) -> None:
+        self.put_with_origin(event, _origin(), block=block, timeout=timeout)
+
+    def put_with_origin(self, event, origin: dict[str, Any],
+                        block: bool = True, timeout: float | None = None) -> None:
         with self._lock:
             self._raise_if_failed()
-            message = parking_event_to_message(event, self._run_id, self._sequence)
+            message = parking_event_to_message(event, self._run_id, self._sequence, origin=origin)
             self._send(message)
 
     def audit(self, name: str, payload: dict[str, Any], timestamp: float | None = None) -> None:
@@ -82,7 +93,7 @@ class _ChildAudit:
         self._audit("REQUEST", {"record_kind": "operation", "operation": operation,
                                  "vehicle_id": vehicle_id, "plate": plate})
 
-    def event(self, event, run_id: str) -> None:
+    def event(self, event, run_id: str, *, origin=None) -> None:
         # The event itself is already published through the same ordered publisher.
         pass
 
@@ -92,6 +103,10 @@ class _ChildAudit:
                                "error": "".join(traceback.format_exception_only(type(error), error))[:1000]})
 
     def _audit(self, name: str, payload: dict[str, Any]) -> None:
+        origin = _origin()
+        payload = {**payload, "origin_process_id": origin["process_id"],
+                   "origin_process_name": origin["process_name"],
+                   "origin_thread_name": origin["thread_name"]}
         try:
             self._publisher.audit(name, payload)
         except RuntimeError:
@@ -394,7 +409,12 @@ class MultiprocessController:
         self._seen_events.add(key)
         event = parking_event_from_message(message)
         if self._audit is not None:
-            self._audit.event(event, message["run_id"])
+            metadata = message.get("origin")
+            audit_origin = ({"origin_process_id": metadata["process_id"],
+                             "origin_process_name": metadata["process_name"],
+                             "origin_thread_name": metadata["thread_name"]}
+                            if metadata is not None else None)
+            self._audit.event(event, message["run_id"], origin=audit_origin)
             if event.type == "SIMULATION_FINISHED":
                 self._audit.end_run(message["run_id"])
         run_id = message["run_id"]

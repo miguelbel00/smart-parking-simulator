@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import heapq
 import math
+import multiprocessing
+import os
 from collections import deque
 from dataclasses import dataclass
 from queue import Queue
@@ -69,7 +71,7 @@ class ParkingLot:
         self._departure_started = False
         self._drained = False
         self._failure: BaseException | None = None
-        self._outbox: deque[object] = deque()
+        self._outbox: deque[tuple[object, dict[str, object]]] = deque()
         self._publish_lock = Lock()
         self._admission_thread = Thread(target=self._admission_worker, name="parking-admission")
         self._departure_thread = Thread(target=self._departure_worker, name="parking-departures")
@@ -156,8 +158,9 @@ class ParkingLot:
         if authorized_space_id is None:
             auth = self._registry.lookup(_normalized_plate(_safe_attr(vehicle, "plate", str)))
             authorized_space_id = auth.space_id if auth and auth.authorized else None
-        self._outbox.append(events.ParkingEvent(kind, time(), vehicle.vehicle_id, space_id, waiting_time,
-                                               _normalized_plate(vehicle.plate), authorized_space_id, reason))
+        event = events.ParkingEvent(kind, time(), vehicle.vehicle_id, space_id, waiting_time,
+                                    _normalized_plate(vehicle.plate), authorized_space_id, reason)
+        self._outbox.append((event, _event_origin()))
 
     def _queue_rejection(self, vehicle_id, plate, slot, reason):
         with self._condition:
@@ -165,8 +168,9 @@ class ParkingLot:
         self._flush_events()
 
     def _queue_rejected_locked(self, vehicle_id, vehicle, plate, slot, reason):
-        self._outbox.append(events.ParkingEvent(events.VEHICLE_REJECTED, time(), vehicle_id,
-                                               None, None, plate, slot, reason))
+        event = events.ParkingEvent(events.VEHICLE_REJECTED, time(), vehicle_id,
+                                    None, None, plate, slot, reason)
+        self._outbox.append((event, _event_origin()))
 
     def _flush_events(self) -> None:
         with self._publish_lock:
@@ -174,9 +178,13 @@ class ParkingLot:
                 with self._condition:
                     if not self._outbox:
                         return
-                    item = self._outbox.popleft()
+                    item, origin = self._outbox.popleft()
                 try:
-                    self._event_queue.put(item)
+                    put_with_origin = getattr(self._event_queue, "put_with_origin", None)
+                    if callable(put_with_origin):
+                        put_with_origin(item, origin)
+                    else:
+                        self._event_queue.put(item)
                 except BaseException as error:
                     with self._condition:
                         self._failure = error
@@ -358,3 +366,11 @@ def _normalized_plate(value):
         return value.strip().upper()
     except BaseException:
         return None
+
+
+def _event_origin() -> dict[str, object]:
+    return {
+        "process_id": os.getpid(),
+        "process_name": multiprocessing.current_process().name,
+        "thread_name": current_thread().name,
+    }

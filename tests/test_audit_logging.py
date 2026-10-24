@@ -37,6 +37,8 @@ def test_event_logged_once_with_original_time_context_and_unchanged_ui_queue(tmp
     assert "plate=Ñ-123" in log[0]
     assert f"run_id={run_id}" in log[0]
     assert "threadName=MainThread" in log[0]
+    assert "origin_thread_name=MainThread" in log[0]
+    assert "origin_process_id=" in log[0]
     expected_process_name = logging.LogRecord("test", logging.INFO, __file__, 1, "", (), None).processName
     assert f"processName={expected_process_name}" in log[0]
     assert "timestamp=" in log[0] and "level=INFO" in log[0]
