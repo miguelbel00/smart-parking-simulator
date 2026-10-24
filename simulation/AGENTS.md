@@ -92,24 +92,30 @@ Utilizar las funciones públicas proporcionadas por core/.
 ## Contrato con core y UI
 
 La simulación utiliza únicamente la API pública de `core`, definida en el
-[contrato raíz](../AGENTS.md#9-integración). `main.py` compone Simulator,
-ParkingLot y la cola compartida; Simulator no administra espacios internos.
-Simulator publica `SIMULATION_STARTED` y `SIMULATION_FINISHED` en la cola.
-Los eventos del ciclo de vida de vehículos pertenecen a core.
+[contrato raíz](../AGENTS.md#9-integración). `main.py` compone el controlador
+de multiprocessing, el adaptador y la UI. El proceso de motor crea Simulator,
+ParkingLot y los recursos de cada ejecución; Simulator no administra espacios
+internos. Sus eventos y los de Core se serializan por el adaptador de
+publicación y cruzan IPC en mensajes del protocolo validado. El proceso padre
+proyecta los eventos recibidos a la `queue.Queue` local de Tk: esa cola no es
+IPC. Los eventos de ciclo de vida vehicular pertenecen a Core; Simulator
+publica inicio y fin de simulación.
 
 La configuración, incluida la capacidad del parqueadero, se centraliza en
 `config.py`. No importar ni modificar widgets de Tkinter.
 
 ## Reglas compartidas
 
-Seguir los requisitos de base de datos y flujo Git del
-[AGENTS.md raíz](../AGENTS.md).
-La persistencia no está asignada a Simulation; no decidir su propiedad,
-integración ni sincronización sin acuerdo del equipo.
+La persistencia con SQLite está explícitamente excluida del alcance actual; no
+agregar trabajo de base de datos salvo que el alcance del proyecto se modifique
+por separado. Seguir las reglas de Git del [AGENTS.md raíz](../AGENTS.md).
 
 ## Auditoría
 
-`main.py` posee la sesión de auditoría de aplicación. `MetricsForwardingQueue`
-registra cada evento publicado bajo el `run_id` explícito y serializa el orden
-de métricas, reenvío a Tk y registro. `Simulator` registra intentos de admisión
-y la intención de detención. No agregar `run_id` al evento compartido.
+`main.py` es dueño de la sesión de auditoría del proceso padre. En el proceso de
+motor, `MetricsForwardingQueue` actualiza las métricas por ejecución y publica
+mediante el publicador IPC; el padre valida y registra los mensajes de eventos
+antes de que el adaptador de GUI los reenvíe a Tk. El proceso hijo reenvía
+ciertos registros de operación y error por IPC; esto no establece una cobertura
+completa de auditoría de todas las validaciones, decisiones o esperas. No agregar
+`run_id` al evento compartido.

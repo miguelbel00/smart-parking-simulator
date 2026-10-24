@@ -21,12 +21,15 @@ datos de la solicitud; no hereda de `Thread`. Cada ejecución crea un
 trabajador de admisión y otro de vencimientos/salidas en `ParkingLot`, además
 del productor de `Simulator`.
 
-Esta es la implementación actual basada en hilos; todavía no implementa
-multiprocessing ni IPC. Su incorporación es obligatoria, pero siguen pendientes
-de decisión el reparto de responsabilidades entre procesos, el mecanismo IPC y
-la propiedad/sincronización del estado crítico. No presentar la arquitectura
-actual como cumplimiento de ese requisito. El profesor sugirió estudiar
-sesiones de usuario/usuarios concurrentes, pero no exigió ese diseño.
+El runtime implementa multiprocessing e IPC: un proceso de motor creado con
+`spawn` ejecuta la simulación y posee el estado de `ParkingLot`; colas
+multiprocessing transportan comandos, respuestas, eventos y ciertos registros
+de auditoría entre ese proceso y el proceso de la UI. Esto describe la
+implementación, pero no demuestra por sí solo el cumplimiento académico: la
+validación de los requisitos sigue pendiente. La política FIFO cuando el
+puesto del vehículo más antiguo está bloqueado también sigue sin decidirse.
+El profesor sugirió estudiar sesiones de usuario/usuarios concurrentes, pero
+no exigió ese diseño.
 
 Los espacios del parqueadero representan recursos limitados compartidos
 entre los vehículos.
@@ -50,9 +53,12 @@ Los módulos deben mantenerse desacoplados.
 
 La dirección de dependencias y eventos es:
 
-main.py compone `simulation`, `core`, `queue.Queue` y `ui`. `simulation`
-invoca únicamente la API pública de `core`. Core y Simulator publican sus
-eventos en la cola compartida, que consume la UI.
+`main.py` compone la UI, la sesión de auditoría y `MultiprocessController`.
+El controlador inicia el proceso de motor; allí se crean `ParkingLot` y
+`Simulator`, que usan la API de core. `MultiprocessGUIAdapter` mantiene un
+hilo de transporte en el proceso de la UI, traslada eventos IPC a la
+`queue.Queue` local de Tk y la UI consume esa cola. Esa `queue.Queue` comunica
+hilos dentro del proceso de la UI; NO es el mecanismo IPC.
 
 La interfaz gráfica NO debe controlar directamente los hilos.
 
@@ -124,9 +130,13 @@ simulation/metrics.py
 
 Este contrato NO debe modificarse unilateralmente.
 
-La comunicación entre los hilos y la interfaz debe realizarse mediante:
+La comunicación entre el adaptador de transporte y Tkinter dentro del proceso
+de la UI debe realizarse mediante:
 
-queue.Queue
+`queue.Queue` (local al proceso; no IPC).
+
+La comunicación entre procesos usa las colas `multiprocessing.Queue` del
+controlador y mensajes validados del protocolo en `simulation/ipc_protocol.py`.
 
 Los eventos usan el dataclass inmutable compartido `ParkingEvent`, definido
 en `core/events.py`:
@@ -178,12 +188,12 @@ los otros módulos.
 
 ### Threads
 
-El runtime actual de `ParkingLot` usa dos hilos orientados a tareas por
-ejecución: admisión y vencimientos/salidas. `Simulator` conserva un hilo
-productor. No agregar hilos por vehículo ni ubicar esperas de admisión o
-permanencia dentro de una solicitud. La arquitectura multiproceso académica
-obligatoria aún debe diseñarse; no implica que cada vehículo tenga su propio
-hilo o proceso.
+El proceso de motor ejecuta `ParkingLot`, que usa dos hilos orientados a tareas
+por ejecución: admisión y vencimientos/salidas. `Simulator` conserva un hilo
+productor; el padre usa un hilo de transporte para atender IPC sin bloquear
+Tkinter. No agregar hilos por vehículo ni ubicar esperas de admisión o
+permanencia dentro de una solicitud. La separación funcional actual no implica
+que cada vehículo tenga su propio hilo o proceso.
 
 La regla académica de FIFO respeta el orden de llegada y da prioridad al
 vehículo que lleva más tiempo esperando cuando cumple su autorización y su
@@ -349,41 +359,31 @@ main.py será el punto de composición de los módulos.
 
 Debe contener poca lógica.
 
-Tras proponer el cambio y revisar su impacto con los responsables de los
-tres módulos conforme a §12, se acordó que `main.py` lea la capacidad desde
-`simulation/config.py`, cree una sola cola para la UI y suministre a
-`Simulator` una fábrica de recursos nuevos para cada ejecución. Ejemplo
-conceptual:
+`main.py` lee configuración y autorizaciones, crea una sola cola local para la
+UI, inicia `MultiprocessController` y conecta `MultiprocessGUIAdapter` con
+`ParkingApp`. La fábrica de recursos por ejecución se ejecuta en el proceso de
+motor, no en `main.py`:
 
-ui_queue = Queue()
-
-def run_factory():
-    metrics = SimulationMetrics()
-    event_queue = MetricsForwardingQueue(destination=ui_queue, metrics=metrics)
-    parking = ParkingLot(capacity=PARKING_CAPACITY, event_queue=event_queue)
-    return parking, event_queue, metrics
-
-simulator = Simulator(run_factory=run_factory)
-
-app = ParkingApp(
-    event_queue=ui_queue,
-    simulator=simulator,
-    capacity=PARKING_CAPACITY,
-)
-
+ui_queue = Queue()  # Queue local del proceso de la UI, no IPC
+controller = MultiprocessController(PARKING_CAPACITY, audit=audit)
+adapter = MultiprocessGUIAdapter(controller, ui_queue, payload_factory)
+adapter.start_engine()  # inicia el hilo de transporte; este inicia el controlador y el motor de forma asíncrona
+app = ParkingApp(event_queue=ui_queue, simulator=adapter,
+                 capacity=PARKING_CAPACITY)
 app.run()
 
-`Simulator` recibe una secuencia ordenada de patentes. `main.py` valida el
-registro JSON completo antes de iniciar la ejecución y lo inyecta en el
-`ParkingLot` recién creado. `Simulator` admite, detiene y cierra la ejecución
-mediante la API de `ParkingLot`; publica los eventos de inicio y fin en la cola
-reenviadora de esa ejecución. La fábrica crea un parqueadero y métricas
-independientes por ejecución; la UI solo consume la cola compartida y solicita
-inicio o detención a `Simulator`, sin administrar hilos ni recursos de core.
-El informe final corresponde únicamente a las métricas de la última ejecución.
-No se modifican las API públicas de core ni los tipos o campos de los eventos.
-Este acuerdo no asigna la persistencia SQLite: su propietario, punto de
-integración y sincronización siguen pendientes de decisión según §16.
+`main.py` valida el registro JSON y lo incluye, junto con la configuración y
+secuencia ordenada de patentes, en el payload START. El controlador valida el
+payload y envía comandos por IPC. El proceso de motor construye un registro
+inmutable, una instancia de métricas y, mediante `run_factory`, un `ParkingLot`
+y su cola reenviadora para cada ejecución. Core/Simulator publican eventos al
+adaptador de publicación del proceso de motor; el proceso padre los valida,
+audita y el adaptador los proyecta a la cola local de la UI. La UI solicita
+inicio/detención mediante el adaptador y no administra procesos, hilos de core
+ni espacios. El informe final corresponde a las métricas de la última
+ejecución. El contrato `ParkingEvent` no incluye `run_id`; este viaja en el
+envoltorio IPC. La persistencia en base de datos está fuera del alcance actual
+del proyecto, de acuerdo con §16.
 
 La lógica específica debe permanecer en su módulo correspondiente.
 
@@ -560,43 +560,39 @@ Semaphore o Lock, ya que son parte fundamental del objetivo académico.
 
 ---
 
-## 16. Database documentation requirements
+## 16. Database scope
 
-- Use SQLite as the local SQL database engine.
-- Include sample vehicle records so SQL queries can be demonstrated.
-- Persist one parking movement/visit record per parking session, including
-  its entry and exit times.
-- Keep sample seed records distinguishable from data created during a program
-  run; do not treat sample records as runtime-generated records.
-- Preserve the existing module boundaries: the UI must not perform database
-  work or control vehicle threads, and worker threads must not update Tkinter.
-- The database ownership, integration point, and synchronization approach are
-  not specified here. Agree on them before assigning persistence
-  responsibility or changing shared module contracts.
-- Keep this educational application simple and explainable. Do not add
-  unconfirmed database features, fields, migrations, or abstraction layers.
+SQLite persistence is explicitly excluded from the current project scope.
+Do not add a database, seed records, persistence fields, or database
+abstractions unless the team separately authorizes a scope change.
 
 ## 17. Registro de auditoría
 
-- Cada sesión de la aplicación usa un `QueueHandler`, un `QueueListener` y un
-  archivo UTF-8 único bajo `logs/`; esta cola es independiente de la cola Tk.
-- Los eventos se auditan una sola vez en el adaptador de publicación, sin
-  modificar `ParkingEvent`; cada ejecución tiene un `run_id` propio.
-- La sesión detiene y vacía el listener solo después de detener y unir los
-  trabajadores. Si falla la escritura o el encolado, informa por stderr y
-  marca la auditoría como incompleta; no garantiza persistencia ante fallos.
+- El proceso padre es dueño de una sesión con `QueueHandler`, `QueueListener`
+  y un archivo UTF-8 único bajo `logs/`. Esta cola de logging es distinta de
+  la cola local de eventos Tk y de las colas multiprocessing de IPC.
+- El proceso hijo no abre un archivo: reenvía ciertos registros de operación
+  y error por IPC. El padre valida secuencias y escribe esos registros; los
+  eventos se registran una sola vez al procesar el envoltorio IPC. Cada
+  ejecución tiene `run_id`, sin añadirlo a `ParkingEvent`.
+- Los requisitos académicos de trazabilidad contemplan solicitudes,
+  validaciones, decisiones, entradas, salidas, esperas y errores, con marcas de
+  tiempo y contexto de proceso/hilo. Estos requisitos deben distinguirse de lo
+  que el runtime registra actualmente; la cobertura no está completamente
+  verificada.
+- El cierre confirma drenaje mediante una barrera y detiene el listener tras
+  el cierre del motor. Fallos de escritura, colas, transporte o confirmación
+  marcan la auditoría incompleta e informan por stderr; no garantizan
+  persistencia ante fallos.
 - El hook temporal de excepciones conserva y delega al hook anterior. El
   registro diagnostica errores, no recupera ni repara el motor.
 
-La auditoría actual usa colas de logging dentro del proceso. El requisito
-académico de logging concurrente, seguro y trazable debe mantenerse al integrar
-multiprocessing; el diseño compartido de logging todavía no está decidido. El
-registro debe permitir reconstruir solicitudes, validaciones, decisiones de
-admisión, esperas, entradas, salidas y errores, con marcas temporales y contexto
-concurrente suficiente para correlacionar proceso/hilo y ejecución. No afirmar
-que el logging actual cubre todos estos campos sin verificarlo; evitar exponer
-datos sensibles y evitar escritores independientes no sincronizados para el
-estado crítico.
+La auditoría actual ya cruza procesos mediante mensajes IPC hacia un único
+escritor padre: se transmiten eventos y ciertos registros de auditoría, no todo
+el logging. Su cobertura no debe presentarse como reconstrucción completa de
+todas las solicitudes, validaciones, decisiones y esperas. Verificar
+los campos y caminos concretos antes de afirmar cobertura académica; proteger
+datos sensibles y no añadir escritores independientes para el estado crítico.
 
 ## 18. Protocolo de trabajo y decisiones académicas pendientes
 
@@ -612,15 +608,15 @@ estado crítico.
   reincorporar el experimento descartado `fde3a8e`. Sin autorización, no hacer
   merge, push, force-push, reset destructivo, borrar ramas ni descartar cambios.
   Los archivos locales no prueban qué código está publicado en GitHub.
-- Multiprocessing e IPC son requisitos obligatorios aún no implementados. Antes
-  de asignar responsabilidades o cambiar contratos, acordar el reparto entre
-  procesos, el mecanismo de IPC, la propiedad y sincronización del estado crítico,
-  la política FIFO cuando el puesto del más antiguo está bloqueado y el logging
-  seguro/trazable entre procesos. No cambiar el contrato actual de eventos
-  `queue.Queue` ni las APIs públicas unilateralmente. Los procesos deben tener
-  responsabilidades funcionales reales, no ser procesos decorativos; evitar
-  escritores independientes del estado crítico salvo que exista sincronización
-  explícita y una propiedad de estado acordada.
+- Multiprocessing e IPC están implementados mediante un proceso de motor
+  `spawn`, colas IPC con mensajes validados y un adaptador de transporte en el
+  padre; el proceso de motor posee el estado de core. Mantener esta separación
+  y no confundir la `queue.Queue` local de Tk con IPC. La conformidad académica
+  integral aún requiere validación. La política FIFO cuando el puesto del más
+  antiguo está bloqueado sigue sin decidirse. No cambiar unilateralmente el
+  contrato `ParkingEvent` ni las APIs públicas. El logging hijo-padre tiene un
+  escritor padre, pero su cobertura debe verificarse contra los requisitos de
+  trazabilidad, no darse por completa.
 - Los requisitos de procesos reales no convierten en obligatorio el diseño de
   sesiones de usuario concurrentes; esa posibilidad fue solo sugerida para
   estudio.

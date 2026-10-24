@@ -47,11 +47,14 @@ interfaz mediante `event_queue.put(...)`; no modificar widgets.
 
 ## Reglas compartidas
 
-Seguir los requisitos de base de datos y flujo Git del
-[AGENTS.md raíz](../AGENTS.md).
-La persistencia no está asignada a Core: no asumir propiedad, integración ni
-sincronización de la base de datos sin acuerdo del equipo.
+La persistencia con SQLite está explícitamente excluida del alcance actual; no
+agregar trabajo de base de datos a Core salvo que el alcance del proyecto se
+modifique por separado. Seguir las reglas de Git del [AGENTS.md raíz](../AGENTS.md).
 
-El requisito académico de multiprocessing/IPC aún no está implementado. No
-asignar propiedad del estado crítico ni modificar el contrato público/cola de
-eventos sin el acuerdo descrito en el AGENTS.md raíz.
+El runtime actual cuenta con un proceso de motor `spawn` que es dueño del estado
+de `ParkingLot`; Core se ejecuta dentro de ese proceso. El controlador de
+simulación gestiona IPC, no la `Queue` de eventos de Core. Esta implementación
+no demuestra por sí sola el cumplimiento académico. No trasladar la propiedad
+del estado ni cambiar unilateralmente la API pública de Core o el contrato de
+`ParkingEvent`. La política FIFO cuando el vehículo más antiguo está bloqueado
+sigue sin decidirse; ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).

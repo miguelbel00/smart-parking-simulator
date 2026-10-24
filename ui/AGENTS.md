@@ -9,8 +9,10 @@ académica aún pendiente para el caso en que el puesto del vehículo más antig
 esté bloqueado. `AdmissionResult` y sus motivos de rechazo están conectados al
 runtime; rechazos emiten `VEHICLE_REJECTED` y pendientes cancelados por cierre
 temprano emiten `VEHICLE_CANCELLED`. La UI sigue siendo solo consumidora de los
-eventos compartidos y no administra la admisión. Multiprocessing/IPC, requisito
-académico obligatorio, aún no está implementado; ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
+eventos y no administra la admisión. El runtime usa un proceso de motor
+`spawn`; el adaptador ejecuta un hilo de transporte en el proceso padre y
+reenvía los eventos IPC a la cola local de Tk. Esto describe la implementación,
+no valida por sí solo el cumplimiento académico; ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
 
 ## Responsable
 
@@ -48,12 +50,12 @@ fuera del hilo principal.
 
 ## Comunicación
 
-La interfaz recibe eventos mediante:
+El hilo de transporte entrega eventos al hilo principal de Tk mediante una
+`queue.Queue` local al proceso de la UI. Esta cola NO es IPC. El transporte
+entre el proceso padre y el proceso de motor usa colas `multiprocessing` y el
+protocolo validado descrito en el [contrato raíz](../AGENTS.md#4-contrato-entre-módulos).
 
-queue.Queue
-
-
-Debe consultar periódicamente la cola:
+Tk debe consultar periódicamente la cola local:
 
 root.after(intervalo, process_events)
 
@@ -96,7 +98,6 @@ El core determina el estado.
 
 ## Reglas compartidas
 
-Seguir los requisitos de base de datos y flujo Git del
-[AGENTS.md raíz](../AGENTS.md).
-La UI no realiza operaciones de base de datos; la propiedad e integración de
-la persistencia deben acordarse antes de asignarlas a un módulo.
+La persistencia con SQLite está explícitamente excluida del alcance actual; no
+agregar trabajo de base de datos en la UI salvo que el alcance del proyecto se
+modifique por separado. Seguir las reglas de Git del [AGENTS.md raíz](../AGENTS.md).
