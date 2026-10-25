@@ -202,3 +202,20 @@ Regression evidence lives in `tests/test_audit_logging.py`,
 GUI state, aggregate metrics and stdout do not replace persisted audit records.
 SQLite is excluded. Tests are bounded evidence, not proof against every race,
 deadlock or abrupt process/filesystem failure.
+
+### Requirement: Bounded Tk event-consumer recovery
+
+The consumer MUST calculate the next canonical projection before widget effects.
+A removed event MUST NOT be requeued or have its dispatch replayed after a
+partial render failure. One reconstruction per run MAY restore slots, plates,
+waiting requests and counters from canonical state without recording metrics
+again. Recovered finish handling MUST still wait for actual drain before
+enabling restart. There MUST be at most one scheduled normal polling callback.
+
+The parent adapter's `report_ui_error` MUST use the existing AuditSession and
+current run context, not a new IPC event or writer. If unavailable, Tk/stderr
+provides a bounded diagnostic fallback. If reconstruction fails or another
+dispatch fails in that run, the UI MUST request Stop and controlled close,
+draining canonical events without retrying the broken widget path. Failed
+visual state MUST NOT be represented as successful recovery. A broken status
+widget MUST NOT prevent shutdown checks and resource draining.

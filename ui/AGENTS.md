@@ -97,6 +97,22 @@ La UI representa el estado.
 
 El core determina el estado.
 
+## Errores durante el polling
+
+La UI mantiene un único callback normal de polling y no reproduce ni reinserta
+un evento consumido tras un fallo parcial de widgets. Antes de renderizar,
+calcula la siguiente proyección canónica. Ante el primer fallo por ejecución,
+reconstruye una sola vez puestos, placas, espera y contadores desde ese estado;
+no vuelve a registrar métricas ni a despachar el evento. Si la reconstrucción
+falla o el error se repite, solicita Stop/cierre y drena eventos sin reutilizar
+la ruta de widgets fallida. Una vista irrecuperable queda explícitamente fallida,
+no se presenta como una finalización visual coherente.
+
+`MultiprocessGUIAdapter.report_ui_error` registra el diagnóstico con la sesión
+de auditoría padre existente; si no está disponible, se usa el reporte de Tk o
+stderr. No cambia IPC, eventos ni el escritor. El cierre no depende del éxito
+de un widget de estado, y el reinicio sigue esperando drenaje real del motor.
+
 ## Reglas compartidas
 
 La persistencia con SQLite está explícitamente excluida del alcance actual; no

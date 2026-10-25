@@ -16,7 +16,10 @@ Operating System Concepts:
 from __future__ import annotations
 
 import queue
+import sys
 import time
+import traceback
+from copy import deepcopy
 from datetime import datetime
 import tkinter as tk
 from typing import Any
@@ -58,6 +61,13 @@ class ParkingApp:
         self._shutdown_complete = False
         self._restart_polling = False
         self._close_started_at = 0.0
+        self._poll_token = None
+        self._processing_events = False
+        self._shutdown_checking = False
+        self._recovery_used = False
+        self._render_failed = False
+        self._projection_unsafe = False
+        self._vehicle_plates: dict[int, str] = {}
 
         # Run-local display state, independent of core's mutable internals.
         self.projection = ParkingProjection(capacity)
@@ -165,22 +175,45 @@ class ParkingApp:
         This guarantees that all Tkinter widget updates are executed safely
         on the Main Thread, adhering to Tkinter's single-threaded GUI model.
         """
-        self._process_events()
-        if not self._shutdown_complete:
-            self.root.after(self.poll_interval_ms, self._schedule_poll)
+        if (self._closing or self._shutdown_complete
+                or getattr(self, '_poll_token', None) is not None
+                or getattr(self, '_processing_events', False)):
+            return
+        try:
+            self._process_events()
+        finally:
+            if not self._closing and not self._shutdown_complete:
+                self._poll_token = self.root.after(self.poll_interval_ms, self._poll_events)
+
+    def _poll_events(self) -> None:
+        self._poll_token = None
+        self._schedule_poll()
 
     def _process_events(self) -> bool:
         """Drain all available events from the thread-safe queue.Queue.
 
         Acts as the consumer in the Producer-Consumer pattern.
         """
+        if getattr(self, '_processing_events', False):
+            return False
+        self._processing_events = True
+        try:
+            return self._drain_events()
+        finally:
+            self._processing_events = False
+
+    def _drain_events(self) -> bool:
         processed = 0
         limit = 128
         if self.simulator is not None and hasattr(self.simulator, "poll_results"):
             for name, run_id, error in self.simulator.poll_results():
                 if name == "ERROR":
-                    self.control_bar.set_pending(f"ERROR: {error}")
-                    self.event_log.log("ENGINE_ERROR", str(error), datetime.now().strftime("%H:%M:%S"))
+                    self._set_status(f"ERROR: {error}")
+                    if not getattr(self, '_render_failed', False):
+                        try:
+                            self.event_log.log("ENGINE_ERROR", str(error), datetime.now().strftime("%H:%M:%S"))
+                        except Exception as widget_error:
+                            self._fail_rendering(widget_error)
                 elif name == "SHUTDOWN_COMPLETE":
                     self._shutdown_complete = True
                 elif name == "CLEANUP_COMPLETE":
@@ -197,9 +230,95 @@ class ParkingApp:
             except Exception:
                 return False
 
-            self._dispatch_event(event)
+            self._consume_event(event)
             processed += 1
         return processed < limit
+
+    def _consume_event(self, event: Any) -> None:
+        """Fold before rendering; a removed event is never requeued or replayed."""
+        if getattr(self, '_projection_unsafe', False):
+            return  # Drain transport even when the visual model cannot be trusted.
+        try:
+            canonical = deepcopy(self.projection)
+            canonical.apply_event(event)
+        except Exception as error:
+            self._projection_unsafe = True
+            self._fail_rendering(error)
+            return
+        if event.type == 'SIMULATION_STARTED' and not getattr(self, '_render_failed', False):
+            self._recovery_used = False
+            self._vehicle_plates = {}
+        plates = getattr(self, '_vehicle_plates', {})
+        if event.vehicle_id is not None and event.plate:
+            plates[event.vehicle_id] = event.plate
+        if event.type in {'VEHICLE_FINISHED', 'VEHICLE_CANCELLED', 'VEHICLE_REJECTED'}:
+            plates.pop(event.vehicle_id, None)
+        self._vehicle_plates = plates
+        if getattr(self, '_render_failed', False):
+            self.projection = canonical
+            return
+        try:
+            self._dispatch_event(event)
+        except Exception as error:
+            self.projection = canonical
+            self._report_ui_error(error)
+            if getattr(self, '_recovery_used', False):
+                self._fail_rendering()
+                return
+            self._recovery_used = True
+            try:
+                self._rebuild_view()
+                if event.type == 'SIMULATION_FINISHED' and not self._closing:
+                    self._schedule_restart_check()
+            except Exception as rebuild_error:
+                self._fail_rendering(rebuild_error)
+        else:
+            self.projection = canonical
+
+    def _rebuild_view(self) -> None:
+        """Reconcile only stateful widgets, never logs, metrics or event callbacks."""
+        for slot in range(1, self.capacity + 1):
+            self.parking_grid.free_slot(slot)
+        for slot, vehicle in self.projection.occupied.items():
+            self.parking_grid.occupy_slot(slot, vehicle, self._vehicle_plates.get(vehicle))
+        self.waiting_lane.clear()
+        for vehicle in sorted(self.projection.waiting):
+            self.waiting_lane.add_vehicle(vehicle, self._vehicle_plates.get(vehicle) or f'Auto #{vehicle}')
+        self._update_display_counters()
+        if not self._closing and self.simulator is not None and self.simulator.is_active():
+            self.control_bar.set_running()
+        # A status-widget failure must not invalidate an otherwise coherent view.
+        try:
+            self._lbl_poll_info.configure(text='UI error: display recovered; see diagnostics')
+        except Exception:
+            print('UI error: display recovered; see diagnostics', file=sys.stderr)
+
+    def _report_ui_error(self, error: BaseException) -> None:
+        """Persist once through the parent writer, with a nonrecursive fallback."""
+        try:
+            reporter = getattr(self.simulator, 'report_ui_error', None)
+            if reporter is not None:
+                reporter(error)
+                return
+            callback = getattr(self.root, 'report_callback_exception', None)
+            if callback is not None:
+                callback(type(error), error, error.__traceback__)
+                return
+        except Exception:
+            pass
+        traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+
+    def _set_status(self, message: str) -> None:
+        try:
+            self.control_bar.set_pending(message)
+        except Exception:
+            print(message, file=sys.stderr)
+
+    def _fail_rendering(self, error: BaseException | None = None) -> None:
+        self._render_failed = True
+        if error is not None:
+            self._report_ui_error(error)
+        self._on_close()
 
     def _dispatch_event(self, event: Any) -> None:
         """Dispatch a single ParkingEvent to update relevant visual components.
@@ -378,15 +497,34 @@ class ParkingApp:
             return
         self._closing = True
         self._close_started_at = time.monotonic()
-        self.control_bar.set_pending("CERRANDO: esperando vehículos")
+        token = getattr(self, '_poll_token', None)
+        if token is not None:
+            self.root.after_cancel(token)
+            self._poll_token = None
+        self._set_status("ERROR UI: cerrando de forma controlada" if getattr(self, '_render_failed', False)
+                         else "CERRANDO: esperando vehículos")
         if self.simulator is not None and hasattr(self.simulator, "shutdown_async"):
             self.simulator.shutdown_async()
         elif self.simulator is not None and self.simulator.is_active():
             self.simulator.stop()
-        self._check_shutdown()
+        if getattr(self, '_processing_events', False):
+            self.root.after(config.SHUTDOWN_POLL_INTERVAL_MS, self._check_shutdown)
+        else:
+            self._check_shutdown()
 
     def _check_shutdown(self) -> None:
         """Destroy only after the background thread and its lot have both drained."""
+        if getattr(self, '_shutdown_checking', False) or self._shutdown_complete:
+            return
+        self._shutdown_checking = True
+        try:
+            self._shutdown_step()
+        finally:
+            self._shutdown_checking = False
+            if not self._shutdown_complete:
+                self.root.after(config.SHUTDOWN_POLL_INTERVAL_MS, self._check_shutdown)
+
+    def _shutdown_step(self) -> None:
         queue_drained = self._process_events()
         if self.simulator is not None and hasattr(self.simulator, "shutdown_complete"):
             if self.simulator.shutdown_complete and queue_drained:
@@ -394,12 +532,12 @@ class ParkingApp:
                 self.root.destroy()
                 return
             if getattr(self.simulator, "cleanup_complete", False) and queue_drained:
-                self.control_bar.set_pending("ERROR: proceso detenido; auditoría/ejecución incompleta")
+                self._set_status("ERROR: proceso detenido; auditoría/ejecución incompleta")
                 self._shutdown_complete = True
                 self.root.destroy()
                 return
             if self.simulator.error is not None:
-                self.control_bar.set_pending(f"ERROR: shutdown incomplete: {self.simulator.error}")
+                self._set_status(f"ERROR: shutdown incomplete: {self.simulator.error}")
         elif self.simulator is None or (
             not self.simulator.is_active() and self.simulator.is_drained()
         ):
@@ -407,10 +545,9 @@ class ParkingApp:
                 self._shutdown_complete = True
                 self.root.destroy()
                 return
-            self.control_bar.set_pending("WARNING: event queue drain failed")
+            self._set_status("WARNING: event queue drain failed")
         if time.monotonic() - self._close_started_at >= config.SHUTDOWN_DRAIN_WARNING_SECONDS:
-            self.control_bar.set_pending("WARNING: shutdown still waiting for drain")
-        self.root.after(config.SHUTDOWN_POLL_INTERVAL_MS, self._check_shutdown)
+            self._set_status("WARNING: shutdown still waiting for drain")
 
     def _schedule_restart_check(self) -> None:
         if not self._restart_polling and not self._closing:

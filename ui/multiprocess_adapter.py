@@ -51,6 +51,13 @@ class MultiprocessGUIAdapter:
         if self._active and self._run_id is not None:
             self._commands.put(("STOP", self._run_id, None, None))
 
+    def report_ui_error(self, error: BaseException) -> None:
+        """Record a Tk-side failure through the existing single parent writer."""
+        audit = getattr(self.controller, '_audit', None)
+        if audit is None:
+            raise RuntimeError('UI diagnostic audit writer unavailable') from error
+        audit.exception('ui_event_dispatch', self._run_id, error)
+
     def is_active(self) -> bool:
         return self._active
 

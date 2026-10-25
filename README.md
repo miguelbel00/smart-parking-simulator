@@ -83,3 +83,12 @@ Stop cancela las solicitudes todavía pendientes, incluso si el productor ya
 terminó de generar y el motor comenzó un drenaje natural. Los vehículos
 estacionados finalizan y liberan sus recursos. La cancelación puede escalar un
 cierre previo, pero una llamada natural atrasada no puede desactivarla.
+
+Si falla parcialmente el despacho de un evento, la UI no lo reinserta ni vuelve
+a ejecutar sus efectos. Calcula el estado canónico antes de renderizar e intenta
+una reconstrucción visual por ejecución. Si resulta segura, continúa con un
+único polling; si falla o se repite el error, inicia Stop y cierre controlado,
+manteniendo el drenaje sin reutilizar widgets fallidos. Los errores se registran
+con la auditoría padre existente y el aviso de recuperación identifica que hubo
+un fallo. No se garantiza que una vista irrecuperable siga mostrando datos
+válidos durante el cierre. Estas rutas no cambian FIFO, IPC ni las métricas.

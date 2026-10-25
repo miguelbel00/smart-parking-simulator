@@ -47,6 +47,31 @@ def test_ipc_event_translates_once_and_updates_current_run_metrics():
     assert destination.empty()
 
 
+def test_ui_error_uses_parent_audit_writer_once(tmp_path):
+    controller = FakeController()
+    audit = AuditSession(tmp_path)
+    controller._audit = audit
+    adapter = MultiprocessGUIAdapter(controller, Queue(), lambda: {})
+    adapter._run_id = 'ui-recovery-run'
+    try:
+        try:
+            raise RuntimeError('partial widget failure')
+        except RuntimeError as error:
+            adapter.report_ui_error(error)
+        assert audit.confirm()
+    finally:
+        audit.close()
+    text = audit.path.read_text(encoding='utf-8')
+    assert text.count('record_kind=exception') == 1
+    assert 'operation=ui_event_dispatch' in text
+    assert 'run_id=ui-recovery-run' in text
+    assert 'origin_process_name=MainProcess' in text
+    assert 'origin_thread_name=MainThread' in text
+    assert 'processName=MainProcess' in text
+    assert 'partial widget failure' in text
+    assert adapter.error is None and adapter.event_queue.empty()
+
+
 def test_stop_request_does_not_wait_for_controller_reply():
     controller = FakeController()
     adapter = MultiprocessGUIAdapter(controller, Queue(), lambda: {})
