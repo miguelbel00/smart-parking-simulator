@@ -10,6 +10,8 @@ from core.parking import ParkingLot
 from simulation.authorizations import Authorization, AuthorizationRegistry, load_authorizations
 from simulation.metrics import MetricsForwardingQueue, SimulationMetrics
 from simulation.simulator import Simulator
+from test_parking import (assert_closed_resources, drain_with_controlled_deadlines,
+                          expire_occupied, pause_admission_publication)
 
 
 def setup_run(plates, capacity=1, registry=None, durations=None):
@@ -197,3 +199,81 @@ def test_invalid_authorization_file_fails_before_task_start(tmp_path):
     simulator = Simulator(factory, ["A"])
     assert not simulator.is_active()
     assert not factory_called.is_set()
+
+
+@pytest.mark.parametrize("stop_after_natural_close", [True, False])
+def test_stop_at_natural_drain_boundary_cancels_pending(monkeypatch, stop_after_natural_close):
+    from simulation import config
+    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
+    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
+    boundary, resume, natural_committed = Event(), Event(), Event()
+    admission_gates = []
+    simulator, queue, runs = setup_run(["A", "B", "C"], durations=lambda: 3600)
+    original_factory = simulator._run_factory
+
+    def factory():
+        lot, forwarder, metrics = original_factory()
+        admission_gates.append(pause_admission_publication(lot, monkeypatch))
+        actual_admit, actual_close = lot.admit, lot.close
+
+        def admit(vehicle):
+            result = actual_admit(vehicle)
+            if vehicle.vehicle_id == 1:
+                with lot._condition:
+                    assert lot._condition.wait_for(lambda: bool(lot._occupied), timeout=2)
+            return result
+
+        def close(wait=True, cancel_pending=True):
+            if not cancel_pending:
+                if stop_after_natural_close:
+                    actual_close(wait=False, cancel_pending=False)
+                boundary.set()
+                assert resume.wait(5), "test did not release natural close"
+                actual_close(wait=False, cancel_pending=False)
+                natural_committed.set()
+            return actual_close(wait=wait, cancel_pending=cancel_pending)
+
+        monkeypatch.setattr(lot, "admit", admit)
+        monkeypatch.setattr(lot, "close", close)
+        return lot, forwarder, metrics
+
+    monkeypatch.setattr(simulator, "_run_factory", factory)
+    try:
+        assert simulator.start()
+        assert boundary.wait(2)
+        lot = runs[0][0]
+        assert lot.snapshot().occupied_spaces == ((0, 1),)
+        assert lot.snapshot().waiting_count == 2
+        simulator.stop()
+        simulator.stop()
+        resume.set()
+        assert natural_committed.wait(2)
+        admission_gates[0][1].set()
+        with lot._condition:
+            assert lot._condition.wait_for(lambda: not lot._pending, timeout=2)
+        assert simulator.is_active() and not simulator.is_drained()
+        assert lot.snapshot().occupied_spaces == ((0, 1),)
+        expire_occupied(lot)
+        wait_exit(simulator)
+        simulator.stop()
+        events = drain(queue)
+        assert events[0].type == SIMULATION_STARTED
+        assert events[-1].type == SIMULATION_FINISHED
+        assert sum(event.type == SIMULATION_FINISHED for event in events) == 1
+        terminals = [event for event in events if event.type in (VEHICLE_FINISHED, VEHICLE_CANCELLED)]
+        assert sorted((event.vehicle_id, event.type) for event in terminals) == [
+            (1, VEHICLE_FINISHED), (2, VEHICLE_CANCELLED), (3, VEHICLE_CANCELLED)]
+        assert all(event.reason == "STOP_REQUESTED" for event in terminals if event.type == VEHICLE_CANCELLED)
+        assert [event.vehicle_id for event in events if event.type == "VEHICLE_ENTERED"] == [1]
+        stats = simulator.metrics.snapshot()
+        assert (stats["total_generated"], stats["total_admitted"], stats["total_finished"],
+                stats["total_cancelled"], stats["total_rejected"]) == (3, 3, 1, 2, 0)
+        assert simulator.is_drained()
+        assert_closed_resources(lot)
+    finally:
+        resume.set()
+        for _, release_admission in admission_gates:
+            release_admission.set()
+        if runs:
+            drain_with_controlled_deadlines(runs[0][0])
+        simulator.shutdown()

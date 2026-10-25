@@ -172,6 +172,13 @@ state or mutate the lot.
 
 ### Requirement: Graceful shutdown
 
+The first close MUST select natural drain or pending cancellation. A subsequent
+explicit Stop MUST be able to escalate a natural drain to cancellation under
+the same condition lock. Once cancellation is selected, later closes MUST NOT
+downgrade it, including stale `cancel_pending=False` calls. Repeated Stop is
+idempotent. Already parked requests finish and release their permits; pending
+requests cancelled before occupancy have exactly one CANCELLED terminal.
+
 Every close MUST reject later requests. `cancel_pending=True` (the default)
 requests cancellation of accepted requests still waiting; parked requests are
 allowed to finish. `cancel_pending=False` allows accepted pending requests to

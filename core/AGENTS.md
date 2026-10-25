@@ -41,6 +41,10 @@ La API actual es:
 - Evitar asignaciones duplicadas y liberaciones dobles del Semaphore.
 - El cierre temprano cancela solicitudes en espera; el cierre natural drena
   las aceptadas. Ambos permiten completar las solicitudes estacionadas.
+- El primer cierre selecciona el modo; un Stop posterior puede escalar drenaje
+  a cancelación. Bajo la misma Condition, ninguna llamada posterior puede
+  desactivar una cancelación ya solicitada, incluso si calculó antes el modo
+  natural. No se reabren admisiones ni se cancelan vehículos estacionados.
 
 ## Restricciones
 

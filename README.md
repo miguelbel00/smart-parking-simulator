@@ -76,3 +76,10 @@ Las métricas, la pantalla y stdout no sustituyen el archivo de auditoría.
 
 El [contrato de eventos y auditoría](openspec/specs/parking-events/spec.md#requirement-concurrent-audit-is-safe-and-traceable)
 detalla resultados, límites y pruebas. SQLite está fuera del alcance.
+
+## Detención y errores de interfaz
+
+Stop cancela las solicitudes todavía pendientes, incluso si el productor ya
+terminó de generar y el motor comenzó un drenaje natural. Los vehículos
+estacionados finalizan y liberan sus recursos. La cancelación puede escalar un
+cierre previo, pero una llamada natural atrasada no puede desactivarla.

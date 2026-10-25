@@ -78,6 +78,12 @@ Only one request may occupy a physical slot at a time. The project owner's appro
 
 ### Requirement: Graceful lot close
 
+Close mode is selected on first close and may only escalate toward cancellation
+afterward. Stop during natural draining MUST cancel requests still pending;
+neither repeated calls nor an already-computed natural close may undo Stop.
+Occupancy/cancellation linearizes under the existing condition lock: a request
+already parked finishes normally, otherwise it is cancelled exactly once.
+
 `close(wait: bool = True, cancel_pending: bool = True)` MUST mark the lot closed and reject subsequent admissions. `cancel_pending=True` requests cancellation of accepted pending requests while allowing parked requests to complete; `cancel_pending=False` allows accepted pending requests to drain normally. `wait=True` joins started workers and returns only after the selected cancellation/drain behavior completes. `wait=False` does not join workers or guarantee that work has drained on return. Workers MUST NOT be forcibly terminated.
 
 The Simulator selects `cancel_pending` from whether an early stop was requested: early stop cancels pending requests, while natural completion drains them. Parked requests complete normally on either path.

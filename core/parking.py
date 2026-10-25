@@ -314,8 +314,14 @@ class ParkingLot:
         if wait and current_thread() in (self._admission_thread, self._departure_thread):
             raise RuntimeError("A parking worker cannot join its parking lot")
         with self._condition:
+            # First close selects drain or cancellation. Later Stop requests
+            # may escalate drain, but stale natural closes cannot undo Stop
+            # or cancellation already selected by a publication failure.
+            if self._closed:
+                self._cancel_pending = self._cancel_pending or cancel_pending
+            else:
+                self._cancel_pending = cancel_pending
             self._closed = True
-            self._cancel_pending = self._cancel_pending and cancel_pending
             self._condition.notify_all()
             started = self._started
         try:

@@ -406,6 +406,10 @@ La lógica específica debe permanecer en su módulo correspondiente.
 - El cierre temprano cancela solicitudes en espera y permite terminar las
   estacionadas. El cierre natural drena las aceptadas. `wait=True` une ambos
   trabajadores y no termina hilos a la fuerza.
+- El primer `close` elige drenaje o cancelación; posteriores solicitudes de Stop
+  pueden escalar un drenaje natural a cancelación de pendientes bajo la misma
+  Condition. Una cancelación ya solicitada no puede volver a drenaje, aunque
+  llegue un `close(cancel_pending=False)` atrasado. No se reabren admisiones.
 - La UI consume eventos de la cola. Si lee un snapshot, lo hace solo como
   consulta segura, nunca para alterar el estado del core.
 

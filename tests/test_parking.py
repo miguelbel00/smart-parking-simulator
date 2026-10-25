@@ -630,3 +630,183 @@ def test_admission_commit_racing_with_close_has_one_terminal_outcome():
         if closer.ident is not None:
             closer.join(3)
         lot.close()
+
+
+def drain_with_controlled_deadlines(lot):
+    # Teardown must also drain the old, broken cancellation implementation.
+    limit = monotonic() + 3
+    lot.close(wait=False)
+    while lot.snapshot().active_requests:
+        assert monotonic() < limit, "controlled teardown did not drain"
+        expire_occupied(lot)
+        with lot._condition:
+            lot._condition.wait(.01)
+    lot.close()
+
+
+def assert_closed_resources(lot):
+    snapshot = lot.snapshot()
+    assert snapshot.occupied_count == snapshot.waiting_count == 0
+    assert snapshot.active_requests == snapshot.occupied_spaces == ()
+    # Closed lots cannot demonstrate plate reuse via admit().
+    assert not lot._active_plates and not lot._active and not lot._pending
+    assert lot._semaphore._value == lot.capacity
+    assert not lot._admission_thread.is_alive()
+    assert not lot._departure_thread.is_alive()
+
+
+def pause_admission_publication(lot, monkeypatch):
+    paused, resume = Event(), Event()
+    actual_flush = lot._flush_events
+
+    def flush():
+        # Pause after the worker commits occupancy and releases the state lock,
+        # without depending on which thread publishes the ENTERED event.
+        if current_thread() is lot._admission_thread and not paused.is_set():
+            paused.set()
+            assert resume.wait(5), "test did not release admission publication"
+        return actual_flush()
+
+    monkeypatch.setattr(lot, "_flush_events", flush)
+    return paused, resume
+
+
+@pytest.mark.parametrize("natural_first", [True, False])
+def test_stop_escalation_cannot_be_downgraded_by_natural_close(monkeypatch, natural_first):
+    q = Queue()
+    lot = make_lot(1, [(plate, True, 0) for plate in ("A", "B", "C")], q)
+    paused, resume = pause_admission_publication(lot, monkeypatch)
+    lot.start()
+    vehicles = [request(lot, i, plate, 3600)
+                for i, plate in enumerate(("A", "B", "C"), 1)]
+    try:
+        assert lot.admit(vehicles[0]).accepted
+        assert paused.wait(2)
+        assert lot.snapshot().occupied_spaces == ((0, 1),)
+        assert all(lot.admit(vehicle).accepted for vehicle in vehicles[1:])
+        assert lot.snapshot().waiting_count == 2
+        if natural_first:
+            lot.close(wait=False, cancel_pending=False)
+            assert lot.snapshot().waiting_count == 2
+        lot.close(wait=False)
+        # Repeated Stop and stale natural-close calls must never undo Stop.
+        lot.close(wait=False, cancel_pending=False)
+        lot.close(wait=False)
+        resume.set()
+        with lot._condition:
+            assert lot._condition.wait_for(lambda: not lot._pending, timeout=2)
+        assert lot.snapshot().occupied_spaces == ((0, 1),)
+        assert [vehicle.state for vehicle in vehicles] == ["PARKED", "CANCELLED", "CANCELLED"]
+        expire_occupied(lot)
+        lot.close()
+        before = list(q.queue)
+        lot.close(cancel_pending=False)
+        lot.close()
+        assert list(q.queue) == before
+        for vehicle in vehicles:
+            kinds = [event.type for event in before if event.vehicle_id == vehicle.vehicle_id]
+            if vehicle.vehicle_id == 1:
+                assert kinds == [VEHICLE_CREATED, VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED]
+            else:
+                assert kinds.count(VEHICLE_CANCELLED) == 1
+                assert VEHICLE_ENTERED not in kinds and VEHICLE_FINISHED not in kinds
+                terminal = next(event for event in before
+                                if event.vehicle_id == vehicle.vehicle_id and event.type == VEHICLE_CANCELLED)
+                assert terminal.reason == "STOP_REQUESTED" and terminal.space_id is None
+        assert_closed_resources(lot)
+    finally:
+        resume.set()
+        drain_with_controlled_deadlines(lot)
+
+
+def test_repeated_natural_close_still_drains_accepted_requests():
+    q = Queue()
+    lot = make_lot(1, [("A", True, 0), ("B", True, 0)], q)
+    lot.start()
+    try:
+        assert lot.admit(request(lot, 1, "A", 3600)).accepted
+        until(lambda: lot.snapshot().occupied_spaces == ((0, 1),))
+        assert lot.admit(request(lot, 2, "B", 3600)).accepted
+        for _ in range(3):
+            lot.close(wait=False, cancel_pending=False)
+        assert lot.snapshot().waiting_count == 1
+        expire_occupied(lot)
+        until(lambda: lot.snapshot().occupied_spaces == ((0, 2),))
+        expire_occupied(lot)
+        lot.close(cancel_pending=False)
+        lot.close(cancel_pending=False)
+        assert [event.vehicle_id for event in list(q.queue) if event.type == VEHICLE_ENTERED] == [1, 2]
+        assert [event.vehicle_id for event in list(q.queue) if event.type == VEHICLE_FINISHED] == [1, 2]
+        assert not any(event.type == VEHICLE_CANCELLED for event in list(q.queue))
+        assert_closed_resources(lot)
+    finally:
+        drain_with_controlled_deadlines(lot)
+
+
+@pytest.mark.parametrize("departure_first", [True, False])
+def test_stop_cancels_pending_during_controlled_departure(monkeypatch, departure_first):
+    q = Queue()
+    lot = make_lot(1, [("A", True, 0), ("B", True, 0)], q)
+    paused, resume = pause_admission_publication(lot, monkeypatch)
+    lot.start()
+    try:
+        assert lot.admit(request(lot, 1, "A", 3600)).accepted
+        assert paused.wait(2)
+        assert lot.admit(request(lot, 2, "B", 3600)).accepted
+        assert lot.snapshot().waiting_count == 1
+        lot.close(wait=False, cancel_pending=False)
+        if departure_first:
+            expire_occupied(lot)
+            until(lambda: lot.snapshot().occupied_count == 0)
+        lot.close(wait=False)
+        if not departure_first:
+            expire_occupied(lot)
+            until(lambda: lot.snapshot().occupied_count == 0)
+        resume.set()
+        with lot._condition:
+            assert lot._condition.wait_for(lambda: not lot._pending, timeout=2)
+        assert lot.snapshot().occupied_count == 0
+        lot.close()
+        events = list(q.queue)
+        assert [event.vehicle_id for event in events if event.type == VEHICLE_ENTERED] == [1]
+        assert [event.vehicle_id for event in events if event.type == VEHICLE_FINISHED] == [1]
+        cancelled = [event for event in events if event.type == VEHICLE_CANCELLED]
+        assert [(event.vehicle_id, event.reason) for event in cancelled] == [(2, "STOP_REQUESTED")]
+        assert_closed_resources(lot)
+    finally:
+        resume.set()
+        drain_with_controlled_deadlines(lot)
+
+
+def test_natural_close_cannot_downgrade_publication_failure_cancellation(monkeypatch):
+    class FailingRejectionQueue(Queue):
+        def put(self, item, *args, **kwargs):
+            if item.type == VEHICLE_REJECTED:
+                raise OSError("controlled rejection publication failure")
+            return super().put(item, *args, **kwargs)
+
+    q = FailingRejectionQueue()
+    lot = make_lot(1, [("A", True, 0), ("B", True, 0)], q)
+    paused, resume = pause_admission_publication(lot, monkeypatch)
+    lot.start()
+    try:
+        assert lot.admit(request(lot, 1, "A", 3600)).accepted
+        assert paused.wait(2)
+        assert lot.admit(request(lot, 2, "B", 3600)).accepted
+        with pytest.raises(OSError, match="controlled rejection publication failure"):
+            lot.admit(request(lot, 3, "UNKNOWN", 3600))
+        lot.close(wait=False, cancel_pending=False)
+        resume.set()
+        with lot._condition:
+            assert lot._condition.wait_for(lambda: not lot._pending, timeout=2)
+        assert lot.snapshot().occupied_spaces == ((0, 1),)
+        expire_occupied(lot)
+        with pytest.raises(RuntimeError, match="Parking event publication failed"):
+            lot.close(cancel_pending=False)
+        assert [(event.vehicle_id, event.reason) for event in list(q.queue)
+                if event.type == VEHICLE_CANCELLED] == [(2, "STOP_REQUESTED")]
+        assert_closed_resources(lot)
+    finally:
+        resume.set()
+        with pytest.raises(RuntimeError, match="Parking event publication failed"):
+            drain_with_controlled_deadlines(lot)

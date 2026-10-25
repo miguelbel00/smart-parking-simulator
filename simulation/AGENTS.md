@@ -28,6 +28,12 @@ reference and one stable rejection reason: `UNKNOWN_PLATE`, `NOT_AUTHORIZED`,
 `DUPLICATE_ACTIVE`, `LOT_CLOSED`, or `INVALID_REQUEST`. Accepted means
 queued/active, not parked.
 
+Natural producer completion may start a draining close. A later explicit Stop
+must still cancel requests that have not parked. The first core close selects
+its mode; subsequent closes can escalate cancellation but cannot downgrade it.
+Keep the existing Stop intent, closed-admission check and worker joins; parked
+requests finish normally and each accepted request has one terminal outcome.
+
 ## Responsable
 
 Persona C — Simulación, configuración y métricas.
