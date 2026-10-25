@@ -288,9 +288,18 @@ def test_child_audit_records_are_forwarded_to_parent_session(tmp_path):
     controller = MultiprocessController(capacity=1, queue_size=32, audit=audit)
     controller.start_engine()
     try:
-        run_id = controller.start(payload())
+        data = payload()
+        data["plate_sequence"] += ["DENIED", "UNKNOWN"]
+        data["authorization"]["vehicles"].append(
+            {"plate": "DENIED", "authorized": False, "space_id": None})
+        run_id = controller.start(data)
+        received = {}
         while True:
             message = controller.get(timeout=10)
+            if message.get("kind") == "event":
+                # Buffered transport deliveries may repeat; auditing deduplicates
+                # by the existing run/sequence key, not by caller get() count.
+                received[message["seq"]] = parking_event_from_message(message)
             if message.get("kind") == "event" and message["name"] == "SIMULATION_FINISHED":
                 break
         audit.close()
@@ -328,6 +337,22 @@ def test_child_audit_records_are_forwarded_to_parent_session(tmp_path):
                        if "event_type=SIMULATION_STARTED" in line)
         assert f"origin_process_id={controller._process.pid}" in started
         assert "origin_thread_name=simulation-producer" in started
+        records = [dict(field.split("=", 1) for field in line.split("\t"))
+                   for line in contents.splitlines()]
+        attempts = [record for record in records if record["operation"] == "admission_attempt"]
+        decisions = [record for record in records
+                     if record["event_type"] in ("VEHICLE_CREATED", "VEHICLE_REJECTED")]
+        assert [(r["run_id"], r["vehicle_id"], r["plate"]) for r in attempts] == [
+            (run_id, "1", "ABC-1"), (run_id, "2", "DENIED"), (run_id, "3", "UNKNOWN")]
+        assert [(r["vehicle_id"], r["result"], r["reason"]) for r in decisions] == [
+            ("1", "ACCEPTED", "-"), ("2", "REJECTED", "NOT_AUTHORIZED"),
+            ("3", "REJECTED", "UNKNOWN_PLATE")]
+        entered = next(event for event in received.values() if event.type == "VEHICLE_ENTERED")
+        persisted = next(record for record in records if record["event_type"] == entered.type)
+        assert float(persisted["waiting_time"]) == entered.waiting_time >= 0
+        assert persisted["result"] == "PARKED"
+        assert persisted["authorized_space_id"] == persisted["space_id"] == "0"
+        assert len([r for r in records if r["record_kind"] == "event"]) == len(received)
     finally:
         if not audit.audit_complete:
             audit.close()
@@ -400,6 +425,31 @@ def test_spawn_child_producer_exception_preserves_origin_and_parent_writer(tmp_p
     assert "origin_thread_name=simulation-producer" in record
     assert "processName=MainProcess" in record
     assert "threadName=MainThread" in record
+    fields = dict(field.split("=", 1) for field in record.split("\t"))
+    assert fields["error_summary"] == "ValueError: controlled producer failure\\n"
+    assert fields["traceback"] == "-"
+
+
+def test_child_error_summary_is_bounded_without_stack_details(tmp_path):
+    from simulation.multiprocess import _ChildAudit
+
+    output = Queue()
+    child = _ChildAudit(_Publisher(output, "error-run"))
+    child.exception("producer_uncaught", "error-run", ValueError("x" * 2000))
+    message = output.get_nowait()
+    assert message["v"] == 1 and message["name"] == "ERROR"
+    assert len(message["payload"]["error"]) == 1000
+    audit = AuditSession(tmp_path)
+    try:
+        audit.audit_record(message)
+        assert audit.confirm()
+    finally:
+        audit.close()
+    records = audit.path.read_text(encoding="utf-8").splitlines()
+    assert len(records) == 1
+    fields = dict(field.split("=", 1) for field in records[0].split("\t"))
+    assert fields["error_summary"] == message["payload"]["error"]
+    assert fields["traceback"] == "-" and fields["exception_type"] == "ValueError"
 
 
 def test_sequential_spawn_runs_share_audited_parent_session(tmp_path, monkeypatch):
@@ -474,6 +524,12 @@ def test_sequential_spawn_runs_share_audited_parent_session(tmp_path, monkeypatc
     assert len(finish_records) == 3
     assert {line.split("run_id=", 1)[1].split("\t", 1)[0]
             for line in finish_records} == set(run_ids)
+    parsed = [dict(field.split("=", 1) for field in line.split("\t")) for line in records]
+    for current_run in run_ids:
+        outcomes = [record["result"] for record in parsed
+                    if record["run_id"] == current_run and record["vehicle_id"] == "1"
+                    and record["record_kind"] == "event"]
+        assert outcomes == ["ACCEPTED", "PARKED", "RELEASED", "FINISHED"]
 
 
 def test_multiple_spawn_runs_stop_waiter_and_audit_all_terminals(tmp_path):
@@ -619,7 +675,7 @@ def test_publisher_fails_closed_on_bounded_queue_full():
     assert publisher.failed
 
 
-def test_stop_active_run_drains_terminals_and_shutdown_joins_workers():
+def test_stop_active_run_drains_terminals_and_shutdown_joins_workers(tmp_path):
     data = payload()
     data["config"].update(total_vehicles=3, min_arrival_time=1, max_arrival_time=1,
                           min_parking_time=5, max_parking_time=5)
@@ -628,7 +684,8 @@ def test_stop_active_run_drains_terminals_and_shutdown_joins_workers():
         {"plate": "DEF-2", "authorized": True, "space_id": 0},
         {"plate": "GHI-3", "authorized": True, "space_id": 0},
     ))
-    controller = MultiprocessController(capacity=1, queue_size=32)
+    audit = AuditSession(tmp_path)
+    controller = MultiprocessController(capacity=1, queue_size=32, audit=audit)
     controller.start_engine()
     try:
         run_id = controller.start(data)
@@ -658,7 +715,23 @@ def test_stop_active_run_drains_terminals_and_shutdown_joins_workers():
     finally:
         controller.shutdown()
         controller.join(10)
+        audit.close()
     assert not controller.is_alive()
+    assert audit.audit_complete
+    records = [dict(field.split("=", 1) for field in line.split("\t"))
+               for line in audit.path.read_text(encoding="utf-8").splitlines()]
+    accepted = {record["vehicle_id"] for record in records
+                if record["event_type"] == "VEHICLE_CREATED"}
+    terminals = [record for record in records
+                 if record["event_type"] in ("VEHICLE_FINISHED", "VEHICLE_CANCELLED")]
+    assert {record["vehicle_id"] for record in terminals} == accepted
+    assert len(terminals) == len(accepted)
+    assert {record["run_id"] for record in terminals} == {run_id}
+    cancelled = [record for record in terminals if record["result"] == "CANCELLED"]
+    assert cancelled and all(record["reason"] == "STOP_REQUESTED" for record in cancelled)
+    assert all(not any(r["event_type"] == "VEHICLE_ENTERED"
+                       and r["vehicle_id"] == record["vehicle_id"] for r in records)
+               for record in cancelled)
 
 
 def test_audit_sequence_gap_marks_audit_incomplete(tmp_path):

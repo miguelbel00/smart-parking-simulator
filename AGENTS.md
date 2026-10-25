@@ -595,12 +595,20 @@ abstractions unless the team separately authorizes a scope change.
 - El hook temporal de excepciones conserva y delega al hook anterior. El
   registro diagnostica errores, no recupera ni repara el motor.
 
-La auditoría actual ya cruza procesos mediante mensajes IPC hacia un único
-escritor padre: se transmiten eventos y ciertos registros de auditoría, no todo
-el logging. Su cobertura no debe presentarse como reconstrucción completa de
-todas las solicitudes, validaciones, decisiones y esperas. Verificar
-los campos y caminos concretos antes de afirmar cobertura académica; proteger
-datos sensibles y no añadir escritores independientes para el estado crítico.
+La auditoría actual cruza procesos hacia un único escritor padre: se transmiten
+eventos y ciertos registros de auditoría, no todo el logging. Los intentos del
+Simulator se correlacionan con resultados canónicos por ejecución y vehículo;
+CREATED acredita aceptación validada, no ocupación. No se registran todas las
+comprobaciones internas ni decisiones de selección FIFO por separado.
+ENTERED persiste `waiting_time` en segundos desde la aceptación en cola hasta
+la ocupación; WAITING es una observación opcional, no el inicio exacto de toda
+espera. Los campos `result`, `waiting_time` y `error_summary` se anexan al formato
+previo; errores resumidos del hijo no ocupan `traceback`. No cambiar contratos
+de eventos/IPC para añadir estos datos ya disponibles. `origin_*` identifica al
+productor, mientras `processName`/`threadName` identifica recepción/registro
+padre, no el listener. Confirmación y cierre técnico de auditoría no certifican
+cobertura académica ni persistencia ante caídas. Proteger datos sensibles y no
+añadir escritores independientes; ver `openspec/specs/parking-events/spec.md`.
 
 ## 18. Protocolo de trabajo y decisiones académicas pendientes
 

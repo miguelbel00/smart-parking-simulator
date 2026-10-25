@@ -119,5 +119,9 @@ motor, `MetricsForwardingQueue` actualiza las métricas por ejecución y publica
 mediante el publicador IPC; el padre valida y registra los mensajes de eventos
 antes de que el adaptador de GUI los reenvíe a Tk. El proceso hijo reenvía
 ciertos registros de operación y error por IPC; esto no establece una cobertura
-completa de auditoría de todas las validaciones, decisiones o esperas. No agregar
-`run_id` al evento compartido.
+completa de cada comprobación interna. CREATED/REJECTED registran el resultado
+de admisión sin duplicar decisiones; ENTERED conserva `waiting_time` en segundos.
+WAITING no garantiza el comienzo exacto de toda espera. El formato persistido
+anexa `waiting_time`, `result` y `error_summary`; el resumen de error del hijo
+no es un traceback completo. No agregar `run_id` al evento compartido ni cambiar
+IPC v1. Confirmación/drenaje de auditoría no son certificación académica.

@@ -22,7 +22,17 @@ _FIELDS = (
     "event_time", "vehicle_id", "plate", "authorized_space_id", "space_id",
     "reason", "threadName", "processName", "origin_process_id", "origin_process_name",
     "origin_thread_name", "exception_type", "traceback",
+    "waiting_time", "result", "error_summary",
 )
+_EVENT_RESULTS = {
+    "VEHICLE_CREATED": "ACCEPTED",
+    "VEHICLE_WAITING": "WAITING",
+    "VEHICLE_ENTERED": "PARKED",
+    "VEHICLE_EXITED": "RELEASED",
+    "VEHICLE_FINISHED": "FINISHED",
+    "VEHICLE_REJECTED": "REJECTED",
+    "VEHICLE_CANCELLED": "CANCELLED",
+}
 _BARRIER_TIMEOUT = 2.0
 
 
@@ -141,9 +151,11 @@ class AuditSession:
 
     def event(self, event: Any, run_id: str, *, origin: dict[str, Any] | None = None) -> None:
         self._log("INFO", "event", run_id, event_type=event.type,
-                  event_time=_utc_millis(event.timestamp), vehicle_id=event.vehicle_id,
-                  plate=event.plate, authorized_space_id=event.authorized_space_id,
-                   space_id=event.space_id, reason=event.reason, **(origin or {}))
+                   event_time=_utc_millis(event.timestamp), vehicle_id=event.vehicle_id,
+                   plate=event.plate, authorized_space_id=event.authorized_space_id,
+                  space_id=event.space_id, reason=event.reason,
+                  waiting_time=event.waiting_time,
+                  result=_EVENT_RESULTS.get(event.type), **(origin or {}))
 
     def operation(self, operation: str, run_id: str, *, vehicle_id=None, plate=None) -> None:
         self._log("INFO", "operation", run_id, operation=operation, vehicle_id=vehicle_id, plate=plate, **_origin())
@@ -165,7 +177,8 @@ class AuditSession:
         operation = values.pop("operation", message["name"])
         error = values.pop("error", None)
         if error is not None:
-            values["traceback"] = error
+            # IPC v1 carries bounded exception-only text, not a stack trace.
+            values["error_summary"] = error
         self._log("ERROR" if message["name"] == "ERROR" else "INFO",
                   "child_audit", message["run_id"],
                   operation=operation, event_time=_utc_millis(message["timestamp"]),

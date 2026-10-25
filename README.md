@@ -44,3 +44,35 @@ mantiene el orden entre competidores por el mismo recurso. No es FIFO global
 estricto ni queda pendiente de autorización de la profesora. Las garantías,
 límites, pruebas y estado de revisión se detallan en la
 [especificación de capacidad](openspec/specs/parking-capacity/spec.md#requirement-arrival-order-and-eligible-fifo).
+
+## Auditoría y trazabilidad
+
+El motor envía eventos y ciertos registros de operación/error por IPC. El padre
+los valida y registra mediante `AuditSession`: una cola local de logging y un
+listener escriben un archivo UTF-8 por sesión en `logs/`. No hay un escritor de
+archivo en el hijo. La cola de logging, las colas IPC y la cola de Tk son distintas.
+
+Cada intento del Simulator se correlaciona por `run_id` y `vehicle_id` con
+CREATED (aceptación validada, no ocupación) o REJECTED (motivo estable). Los
+eventos canónicos registran espera observable, ocupación, liberación y terminales
+sin crear un segundo registro equivalente. ENTERED persiste `waiting_time` en
+segundos desde la aceptación en cola hasta el compromiso de ocupación; WAITING
+es opcional y no marca necesariamente el comienzo de toda espera.
+
+El formato agrega al final `waiting_time`, `result` y `error_summary`; conserva
+las columnas previas. Los resúmenes de errores del hijo (hasta 1000 caracteres
+antes de escapar delimitadores) van a `error_summary`, no a `traceback`.
+Los consumidores que antes interpretaban esa columna como error del hijo deben
+usar la nueva; no se modifican archivos históricos ni el protocolo IPC v1.
+Los mensajes de excepción pueden contener información sensible: no incluir
+credenciales ni datos ajenos a la operación en ellos y proteger el acceso a logs.
+
+`timestamp` identifica el registro en el padre y `event_time` el tiempo original
+cuando está disponible. `origin_*` identifica al productor; `processName` y
+`threadName` identifican el contexto padre que recibe/registra, no el hilo del
+listener que escribe físicamente. `audit_confirmed` y `audit_complete` expresan
+confirmación/drenaje técnico, no cobertura académica ni durabilidad ante caídas.
+Las métricas, la pantalla y stdout no sustituyen el archivo de auditoría.
+
+El [contrato de eventos y auditoría](openspec/specs/parking-events/spec.md#requirement-concurrent-audit-is-safe-and-traceable)
+detalla resultados, límites y pruebas. SQLite está fuera del alcance.

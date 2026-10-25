@@ -114,18 +114,91 @@ When Simulator completes a run, it MUST wait for core to drain and publish all t
 
 ### Requirement: Concurrent audit is safe and traceable
 
-The academic system MUST provide concurrent logging that is safe and traceable
-across its processes. The current application audit uses a `QueueHandler`, a
-`QueueListener`, and a unique UTF-8 file per application session, separate from
-the Tk event queue; that describes the present in-process runtime and does not
-establish multiprocessing-safe logging. Cross-process logging ownership and
-synchronization remain pending design decisions. Event auditing MUST remain
-single-pass at the publication adapter and MUST NOT require changing
-`ParkingEvent` fields solely to add a run identifier.
+The parent MUST own one `AuditSession` with a `QueueHandler`, local logging
+queue, `QueueListener` and UTF-8 file per application session. Child producers
+MUST forward selected operation/error records through the existing validated
+IPC; they MUST NOT open independent audit files. Received canonical events are
+audited once per run/sequence key before projection to the local Tk queue.
+`ParkingEvent` and IPC v1 schemas remain unchanged.
 
-Trace records MUST make requests, validation, admission decisions, waits,
-entries, exits, and errors reconstructable with timestamps and enough
-process/thread/run context to correlate concurrent activity. Logging MUST
-avoid exposing sensitive data and MUST NOT let independent unsynchronized
-writers mutate critical parking state. The current logger's coverage of every
-required trace detail has not been established by this specification update.
+Each Simulator `admission_attempt` MUST correlate by `run_id` and `vehicle_id`
+with CREATED or REJECTED. CREATED is evidence that the relevant admission
+checks passed (valid request, known authorized plate, no duplicate active plate,
+started/open lot); it does not prove occupancy. A rejected result records the
+first applicable stable reason, not a transcript of every internal check.
+Malformed requests may lack valid identifiers. No redundant decision rows or
+per-check events are required.
+
+The existing tab-separated key/value format appends `waiting_time`, `result`
+and `error_summary`; existing column names and order are retained. Absent values
+are `-`. Historical logs are not rewritten. Consumers requiring fixed column
+counts must accept appended fields; consumers of child error text must use
+`error_summary` rather than the former misleading `traceback` value.
+
+| Canonical event | Persisted result | Interpretation |
+|---|---|---|
+| VEHICLE_CREATED | ACCEPTED | Accepted/enqueued, not parked |
+| VEHICLE_WAITING | WAITING | Observable waiting for the authorized resource |
+| VEHICLE_ENTERED | PARKED | Occupancy/assignment committed |
+| VEHICLE_EXITED | RELEASED | Physical slot released |
+| VEHICLE_FINISHED | FINISHED | Normal completion after occupancy |
+| VEHICLE_REJECTED | REJECTED | Rejected with the original stable reason |
+| VEHICLE_CANCELLED | CANCELLED | Pending request cancelled; STOP_REQUESTED |
+
+`reason` MUST retain the canonical event value, including absence; no successful
+validation or waiting explanation is invented. The result and event semantics
+provide the explanation when no reason is carried. Simulation boundary events
+and non-event rows retain `result=-`.
+
+`waiting_time` MUST preserve the original elapsed seconds calculated using
+Core's monotonic enqueue/occupancy times. It is populated on ENTERED only, not
+recomputed from wall-clock timestamps or WAITING. WAITING is optional: Core
+marks waiting when selection finds no eligible request; it need not occur at
+acceptance, and its absence does not imply zero elapsed wait. Cancelled pending
+requests have no computed occupancy wait duration; do not invent one.
+
+`timestamp` is parent registration time; `event_time` is the original event or
+child audit message time when available. `origin_process_id`,
+`origin_process_name` and `origin_thread_name` describe the producer, while
+`processName` and `threadName` describe parent reception/registration, not the
+physical writer thread. Legacy IPC messages may omit origin metadata, which
+remains unknown rather than being attributed to the parent. Existing run and
+vehicle correlation is sufficient for these outcomes; no new sequence or
+command-ID fields are needed. No global cross-thread chronology is promised.
+
+Child error payload `error` remains IPC-v1-compatible exception-only text,
+bounded by the child to 1000 characters before escaping. It MUST be persisted
+as `error_summary` alongside `exception_type`, operation, run and available
+origin; it MUST NOT be presented as a complete traceback. `traceback=-` for
+these messages; parent-local exceptions retain their actual traceback. Do not
+add source lines, locals or request payloads to child summaries. Exception
+messages can still contain sensitive data; callers must avoid secrets and log
+access must be protected. This is not a universal redaction guarantee.
+
+`audit_confirmed`/`audit_complete` MUST retain technical confirmation/drain
+semantics, not academic certification or crash-proof durability. Observed queue,
+transport, sequence, writer or barrier failures MUST prevent silent confirmed
+success. Stop, restart and shutdown MUST preserve the existing drain ordering.
+
+#### Scenario: Core waiting duration survives the process boundary
+
+- GIVEN an authorized vehicle admitted by the spawn engine
+- WHEN ENTERED crosses IPC and AuditSession drains to the parent file
+- THEN persisted waiting_time equals the received original duration in seconds
+- AND vehicle/run/plate, authorized/physical slots and producer origin correlate
+- AND acceptance and occupancy remain distinct single canonical records
+
+#### Scenario: Cancellation, isolation and errors remain reconstructable
+
+- GIVEN normal, rejected and early-stopped requests across successive runs
+- WHEN records are read after confirmed drain and shutdown
+- THEN each accepted request has one FINISHED or CANCELLED terminal, not both
+- AND a cancelled pending request has no occupancy record
+- AND rejection reasons and run boundaries are preserved
+- AND a child error is represented as a bounded summary, not a stack trace
+
+Regression evidence lives in `tests/test_audit_logging.py`,
+`tests/test_multiprocess.py` and the protocol, adapter, main and shutdown tests.
+GUI state, aggregate metrics and stdout do not replace persisted audit records.
+SQLite is excluded. Tests are bounded evidence, not proof against every race,
+deadlock or abrupt process/filesystem failure.
