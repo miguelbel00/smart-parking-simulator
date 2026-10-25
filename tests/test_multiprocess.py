@@ -98,6 +98,56 @@ def test_start_pre_reply_messages_have_one_public_delivery(controlled_controller
         controller.get(block=False)
 
 
+def test_start_rejects_an_unfinished_run_without_sending_another_command(controlled_controller):
+    """No completion is published, so the active-run guard has no timing race."""
+    controller = controlled_controller
+    controller._output.put(command_reply("START", "run-1"))
+    first = controller.start(payload())
+    sent = controller._commands.get_nowait()
+    assert (sent["name"], sent["run_id"], sent["request_id"]) == ("START", first, "req-1")
+
+    with pytest.raises(RuntimeError, match="already active"):
+        controller.start(payload())
+
+    with pytest.raises(Empty):
+        controller._commands.get_nowait()
+    with pytest.raises(Empty):
+        controller.get(block=False)
+
+
+def test_start_accepts_successor_when_completion_precedes_start_reply(controlled_controller):
+    """A completed run does not stay active until callers consume its events."""
+    from core.events import ParkingEvent
+
+    controller = controlled_controller
+    events = [
+        ParkingEvent("SIMULATION_STARTED", 1.0),
+        ParkingEvent("VEHICLE_CREATED", 2.0, 1, plate="ABC-1", authorized_space_id=0),
+        ParkingEvent("VEHICLE_ENTERED", 3.0, 1, 0, 0.0, "ABC-1", 0),
+        ParkingEvent("VEHICLE_EXITED", 4.0, 1, 0, plate="ABC-1", authorized_space_id=0),
+        ParkingEvent("VEHICLE_FINISHED", 5.0, 1, plate="ABC-1", authorized_space_id=0),
+        ParkingEvent("SIMULATION_FINISHED", 6.0),
+    ]
+    messages = [parking_event_to_message(event, "run-1", seq)
+                for seq, event in enumerate(events)]
+    for message in messages + [command_reply("START", "run-1")]:
+        controller._output.put(message)
+    first = controller.start(payload())
+
+    controller._output.put(command_reply("START", "run-2", "req-2"))
+    second = controller.start(payload())
+
+    assert (first, second) == ("run-1", "run-2")
+    assert [controller.get(block=False) for _ in messages] == messages
+    with pytest.raises(Empty):
+        controller.get(block=False)
+    commands = [controller._commands.get_nowait() for _ in range(2)]
+    assert [(command["name"], command["run_id"], command["request_id"])
+            for command in commands] == [("START", first, "req-1"), ("START", second, "req-2")]
+    with pytest.raises(Empty):
+        controller._commands.get_nowait()
+
+
 @pytest.mark.parametrize("command,run_id", [
     ("START", "buffer-run"), ("STOP", "buffer-run"), ("SHUTDOWN", None),
 ])
@@ -261,9 +311,8 @@ def test_spawn_engine_has_distinct_pid_and_successive_runs_are_isolated():
     controller.start_engine()
     try:
         assert controller._process.pid != __import__("os").getpid()
+        # Completion can precede START's reply; overlap has its own controlled test.
         first = controller.start(payload())
-        with pytest.raises(RuntimeError, match="already active"):
-            controller.start(payload())
         while True:
             message = controller.get(timeout=10)
             if message.get("kind") == "event" and message["name"] == "SIMULATION_FINISHED":
