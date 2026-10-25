@@ -3,12 +3,14 @@ schema: spec-driven
 context: |
   Python smart parking simulator with a Tkinter UI.
   Architecture separates core concurrency, simulation, and UI; main.py composes them.
-  Current runtime: Vehicle request data is coordinated by task-oriented threads;
-  the UI consumes immutable ParkingEvent values through an in-process queue.
-  Mandatory academic multiprocessing and IPC are not yet implemented. Process
-  responsibilities, IPC mechanism, critical-state ownership/synchronization,
-  and cross-process logging remain design decisions. FIFO behavior when the
-  oldest request's authorized slot is blocked is unresolved.
+  Current runtime: a spawn engine process owns ParkingLot and Simulator with
+  task-oriented workers. Validated multiprocessing IPC carries commands,
+  events and selected audit records. The parent transport forwards events to
+  the local Tk queue and AuditSession owns the single parent file writer.
+  FIFO among eligible requests with strict per-authorized-slot FIFO is approved;
+  blocked slots do not prevent progress at other free authorized slots.
+  Academic compliance must be assessed against concrete behavior and tests.
+  SQLite is excluded. Audit confirmation means technical drain, not certification.
   Core owns admission, capacity, synchronization, and vehicle lifecycle.
   Generated technical artifacts use English.
   Downstream work pace: automatic. Delivery strategy: auto-chain.

@@ -1,4 +1,5 @@
 from queue import Queue
+from heapq import heapify
 import math
 from threading import Event, Thread, current_thread, enumerate as active_threads
 from time import monotonic, sleep
@@ -31,6 +32,16 @@ def until(predicate, timeout=2):
 
 def request(lot, vehicle_id, plate, duration=.03):
     return Vehicle(vehicle_id, lot, duration, plate)
+
+
+def expire_occupied(lot):
+    # Control elapsed time without relying on short sleeps or scheduler order.
+    with lot._condition:
+        due = monotonic() - 1
+        lot._deadlines[:] = [(due, sequence, vehicle, slot)
+                            for _, sequence, vehicle, slot in lot._deadlines]
+        heapify(lot._deadlines)
+        lot._condition.notify_all()
 
 
 def test_fixed_workers_capacity_exact_slot_and_lifecycle_order():
@@ -95,19 +106,41 @@ def test_waiting_events_and_immutable_snapshot_carry_authorized_slot():
 
 def test_same_slot_fifo_and_progress_on_other_slot():
     queue = Queue()
-    lot = make_lot(2, [("A1", True, 0), ("A2", True, 0), ("B", True, 1)], queue)
+    records = [("OWNER", True, 0), ("A", True, 0),
+               ("B", True, 1), ("LATER", True, 0)]
+    lot = make_lot(2, records, queue)
     lot.start()
-    a1 = request(lot, 1, "A1", .08)
-    a2 = request(lot, 2, "A2", .01)
-    b = request(lot, 3, "B", .01)
-    assert all(lot.admit(v).accepted for v in (a1, a2, b))
-    until(lambda: lot.snapshot().occupied_count == 2)
-    assert lot.snapshot().occupied_spaces == ((0, 1), (1, 3))
-    lot.close(cancel_pending=False)
-    assert a2.state == "FINISHED" and b.state == "FINISHED"
-    entries = [event.vehicle_id for event in list(queue.queue)
-               if event.type == "VEHICLE_ENTERED"]
-    assert entries.index(1) < entries.index(2)
+    vehicles = [request(lot, i, plate, 30)
+                for i, (plate, _, _) in enumerate(records, 1)]
+    try:
+        assert lot.admit(vehicles[0]).accepted
+        until(lambda: lot.snapshot().occupied_spaces == ((0, 1),))
+        assert lot.admit(vehicles[1]).accepted
+        until(lambda: lot.snapshot().waiting_count == 1)
+        until(lambda: vehicles[1].state == "WAITING")
+        assert lot.admit(vehicles[2]).accepted
+        until(lambda: lot.snapshot().occupied_spaces == ((0, 1), (1, 3)))
+        assert lot.admit(vehicles[3]).accepted
+        assert lot.snapshot().waiting_count == 2
+
+        expire_occupied(lot)
+        until(lambda: lot.snapshot().occupied_spaces == ((0, 2),))
+        assert lot.snapshot().waiting_count == 1
+        expire_occupied(lot)
+        until(lambda: lot.snapshot().occupied_spaces == ((0, 4),))
+        expire_occupied(lot)
+        until(lambda: lot.snapshot().occupied_count == 0)
+        lot.close(cancel_pending=False)
+
+        entries = [event for event in list(queue.queue)
+                   if event.type == VEHICLE_ENTERED]
+        assert [event.vehicle_id for event in entries] == [1, 3, 2, 4]
+        assert all(event.space_id == event.authorized_space_id for event in entries)
+        assert all(vehicle.state == "FINISHED" for vehicle in vehicles)
+        assert lot.snapshot().waiting_count == 0
+    finally:
+        expire_occupied(lot)
+        lot.close()
 
 
 def test_three_same_slot_requests_enter_in_fifo_order_across_releases():
@@ -492,3 +525,108 @@ def test_join_failure_can_be_retried_without_losing_drain(monkeypatch):
     assert lot._drained
     assert not lot._admission_thread.is_alive()
     assert not lot._departure_thread.is_alive()
+
+
+def test_concurrent_slot_releases_preserve_capacity_and_progress_fifo():
+    q = Queue()
+    lot = make_lot(2, [(f"P{i}", True, (i - 1) % 2) for i in range(1, 7)], q)
+    lot.start()
+    vehicles = [request(lot, i, f"P{i}", 30) for i in range(1, 7)]
+    try:
+        assert all(lot.admit(vehicle).accepted for vehicle in vehicles)
+        until(lambda: lot.snapshot().waiting_count == 4)
+
+        for expected in ({1, 2}, {3, 4}, {5, 6}):
+            until(lambda: {vehicle_id for _, vehicle_id in lot.snapshot().occupied_spaces}
+                  == expected)
+            assert lot._semaphore._value == 0
+            expire_occupied(lot)
+        until(lambda: lot.snapshot().occupied_count == 0)
+        lot.close(cancel_pending=False)
+
+        events = list(q.queue)
+        occupied = {}
+        for event in events:
+            if event.type == VEHICLE_ENTERED:
+                assert event.space_id == event.authorized_space_id
+                assert event.space_id not in occupied
+                occupied[event.space_id] = event.vehicle_id
+                assert len(occupied) <= lot.capacity
+            elif event.type == VEHICLE_EXITED:
+                assert occupied.pop(event.space_id) == event.vehicle_id
+        assert not occupied
+        for slot, expected in ((0, [1, 3, 5]), (1, [2, 4, 6])):
+            assert [event.vehicle_id for event in events
+                    if event.type == VEHICLE_ENTERED and event.space_id == slot] == expected
+        assert all(vehicle.state == "FINISHED" for vehicle in vehicles)
+        assert lot._semaphore._value == lot.capacity
+        assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+    finally:
+        expire_occupied(lot)
+        lot.close()
+
+
+def test_admission_commit_racing_with_close_has_one_terminal_outcome():
+    class PausingCreatedQueue(Queue):
+        def __init__(self):
+            super().__init__()
+            self.created = Event()
+            self.release = Event()
+
+        def put(self, item, *args, **kwargs):
+            if item.type == VEHICLE_CREATED:
+                super().put(item, *args, **kwargs)
+                self.created.set()
+                assert self.release.wait(3), "test did not release CREATED publication"
+                return
+            return super().put(item, *args, **kwargs)
+
+    q = PausingCreatedQueue()
+    lot = make_lot(1, [("A", True, 0)], q)
+    lot.start()
+    vehicle = request(lot, 1, "A", .02)
+    result = []
+    errors = []
+
+    def admit():
+        try:
+            result.append(lot.admit(vehicle))
+        except BaseException as error:
+            errors.append(error)
+
+    def close():
+        try:
+            lot.close()
+        except BaseException as error:
+            errors.append(error)
+
+    admission = Thread(target=admit)
+    closer = Thread(target=close)
+    try:
+        admission.start()
+        assert q.created.wait(2)
+        # CREATED is published after the request is committed under the lot
+        # lock; close therefore races the still-returning admit caller.
+        closer.start()
+        with lot._condition:
+            assert lot._condition.wait_for(lambda: lot._closed, timeout=2)
+        assert admission.is_alive()
+        q.release.set()
+        admission.join(3)
+        closer.join(3)
+        assert not admission.is_alive() and not closer.is_alive()
+        assert not errors
+        assert len(result) == 1 and result[0].accepted
+        terminals = [event for event in list(q.queue)
+                     if event.vehicle_id == vehicle.vehicle_id
+                     and event.type in (VEHICLE_FINISHED, VEHICLE_CANCELLED)]
+        assert len(terminals) == 1
+        assert terminals[0].type == f"VEHICLE_{vehicle.state}"
+        assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+        assert lot._semaphore._value == lot.capacity
+    finally:
+        q.release.set()
+        admission.join(3)
+        if closer.ident is not None:
+            closer.join(3)
+        lot.close()

@@ -3,9 +3,8 @@
 ## Purpose
 
 Specify the current `ParkingLot` capacity, admission, authorization, and snapshot
-contract, while recording the mandatory academic multiprocessing/IPC
-requirement separately from implementation status. Multiprocessing and IPC are
-not implemented; their ownership and design remain pending agreement.
+contract within the implemented spawn-engine/validated-IPC architecture.
+Implementation evidence and tests do not alone certify every academic requirement.
 
 ## Requirements
 
@@ -24,8 +23,8 @@ The lot MUST enforce its configured capacity with a semaphore, acquiring a
 permit only when physical occupancy is committed and releasing it exactly once
 on departure. A lock/condition MUST protect shared transitions and coordinate
 workers without active polling. No per-vehicle threads are permitted; this is
-the current task-worker implementation, not a claim that multiprocessing/IPC
-is complete.
+the task-worker implementation inside the engine process, not a thread or
+process per vehicle.
 
 #### Scenario: Full lot does not block admission
 
@@ -70,21 +69,89 @@ released consistently and exactly once on the applicable terminal transition.
 
 ### Requirement: Arrival order and eligible FIFO
 
-The academic requirement MUST respect arrival order and serve the longest-
-waiting vehicle first when that vehicle is authorized for its specific slot and
-that slot is available. The policy for an oldest request whose authorized slot
-is blocked is unresolved and MUST NOT be inferred from implementation behavior.
+The project owner has definitively adopted FIFO among eligible requests, with
+strict FIFO per authorized slot. Requests MUST be considered in acceptance order
+under the core lock; concurrent call start times do not define arrival order.
+A request is eligible when its assigned slot is free and no older pending
+request targets that same slot. Only validated authorized requests enter the
+pending queue. No request MAY occupy a different slot.
 
-The current runtime scans for eligible requests and preserves strict FIFO among
-requests for the same authorized slot, allowing an eligible request for another
-slot to proceed. This describes current behavior, not a settled interpretation
-of the unresolved academic policy.
+An occupied slot MUST NOT block eligible requests for other slots. Once the
+blocked slot is released, its oldest still-eligible pending request MUST be
+served before younger requests for that slot. This avoids unnecessary global
+blocking while preserving FIFO among requests competing for the same resource.
+It is not strict global FIFO and is not pending professor approval. There is
+no bounded-wait guarantee if a slot never becomes available; early close cancels
+pending requests, while natural close drains them after occupants finish.
+
+`Condition(Lock())` protects acceptance, selection, occupancy and release. The
+semaphore is acquired only at occupancy commit and released on departure;
+pending requests do not hold permits.
 
 #### Scenario: Longest-waiting eligible request
 
 - GIVEN multiple waiting requests whose authorized slots are available
 - WHEN the lot selects a request to occupy a released slot
 - THEN the eligible request with the longest wait is served first
+
+#### Scenario: A blocked slot does not stop another eligible request
+
+- GIVEN an occupant holds slot 0 and A is waiting for slot 0
+- WHEN B is accepted after A for free authorized slot 1
+- THEN B enters slot 1 while A keeps waiting for slot 0
+- AND neither request may occupy an unauthorized slot
+- AND when slot 0 is released A enters before a younger request for slot 0
+
+#### Validation evidence and review status
+
+`tests/test_parking.py` covers this contract through:
+
+- `test_same_slot_fifo_and_progress_on_other_slot`: controlled releases verify
+  blocked A, progress of B, eventual entry of A and same-slot ordering.
+- `test_oldest_eligible_request_is_selected_before_later_eligible_request`:
+  event-coordinated selection among requests for distinct free slots.
+- `test_three_same_slot_requests_enter_in_fifo_order_across_releases` and
+  `test_concurrent_slot_releases_preserve_capacity_and_progress_fifo`:
+  repeated per-slot FIFO, exclusive authorized occupancy and permit recovery.
+- `test_admission_commit_racing_with_close_has_one_terminal_outcome`, early-close
+  and natural-drain tests: accepted requests terminate without duplicate outcomes.
+- `test_rejection_reasons_and_duplicate_active_for_waiting_and_parked` and
+  `test_concurrent_same_plate_admission_has_single_winner`: active-plate exclusion.
+
+The controlled-release tests adjust private deadlines under the condition lock
+to avoid depending on short dwell times; assertions use admission results,
+snapshots, vehicle states and lifecycle events, with a white-box permit check.
+Successful tests are bounded evidence, not proof that all races or deadlocks
+are impossible.
+
+Engram's latest available review record (2026-10-24, observation 490) reports
+`review-5d649f61e49db666` awaiting `review-reliability` because native capture
+transport was unavailable. It records no admitted verdict. This historical
+administrative pending state is not evidence of a FIFO defect, nor a current
+live-status confirmation. Changes to tests do not inherit review of older bytes.
+
+Validation on 2026-10-24 in the local working tree:
+
+- The two previously uncommitted tests passed before adjustment (2 passed in
+  60.08 s). Their intent is retained; controlled releases now avoid long waits
+  and per-slot assertions no longer require an unsupported global entry order.
+  The close test observes the closed predicate before releasing publication and
+  checks thread errors and agreement between terminal event and vehicle state.
+- `.venv/bin/python -m pytest tests/test_parking.py tests/test_vehicle_lifecycle.py tests/test_app_shutdown.py -q -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning`:
+  41 passed in 1.32 s.
+- `.venv/bin/python -m pytest -q -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning`:
+  223 passed in 12.96 s.
+- Independent technical verification in an external scratch copy found no
+  change-caused blockers; parking tests passed (27), and two additional probe
+  cases passed against both candidate and baseline production. This is not a
+  native review verdict. Those exploratory probes are not repository tests.
+
+FIFO is functionally closed within this contract: production is unchanged and
+no in-scope functional defect is known from these checks. The two improved tests
+were uncommitted at that validation date, as requested. Native assessment of this change reported
+`medium`, `review_due: false`, `under_budget`; no replacement review was started
+and no approval of the historical transaction is claimed. Successful tests do
+not certify all academic requirements or absence of every race/deadlock.
 
 ### Requirement: Exclusive spaces and immutable snapshots
 
@@ -131,16 +198,15 @@ cancellation, while natural completion drains accepted requests.
 
 ### Requirement: Multiprocessing and IPC academic requirement
 
-The delivered academic system MUST use real multiprocessing and inter-process
-communication. This is a mandatory requirement but is NOT implemented by the
-current runtime. Process responsibility split, concrete IPC mechanism, and
-ownership/synchronization of critical shared state MUST be agreed before
-implementation or changes to shared public contracts. Do not treat the current
-in-process `queue.Queue` event contract as IPC or replace it unilaterally.
+The runtime MUST preserve the spawn engine's ownership of ParkingLot and
+Simulator, validated multiprocessing command/output queues, and the parent
+transport's projection to the local Tk event queue. The local Tk queue is not
+IPC. Changes to ownership or public contracts require coordination.
 
-#### Scenario: IPC design is coordinated before implementation
+#### Scenario: Engine and parent preserve state ownership
 
-- GIVEN multiprocessing/IPC work is proposed
-- WHEN responsibilities and interfaces are planned
-- THEN the team agrees on process ownership, IPC, critical-state synchronization,
-  and compatibility with current module/event contracts before implementation
+- GIVEN a simulation run in the child engine
+- WHEN commands, events and selected audit records cross IPC
+- THEN only engine workers mutate parking state under core synchronization
+- AND the parent validates messages, audits them through its single file writer,
+  and delivers events to Tk without worker widget access

@@ -31,10 +31,12 @@ La API actual es:
 - Dos hilos orientados a tareas por lote realizan admisión y salidas/deadlines;
   no crear un hilo por vehículo ni mantener un trabajador durante su estadía.
 - Un `Semaphore` y un `Lock`/`Condition` mantienen capacidad y estado seguros.
-- El runtime actual admite por elegibilidad y mantiene FIFO estricto por puesto.
-  La regla académica prioriza llegada/espera entre vehículos elegibles con su
-  puesto disponible; qué hacer cuando el más antiguo está bloqueado sigue
-  pendiente. Ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
+- La política aprobada admite por elegibilidad y mantiene FIFO estricto por
+  puesto autorizado. Si el más antiguo tiene su puesto ocupado, otro vehículo
+  puede ingresar a su propio puesto libre; nunca se reasignan puestos. El orden
+  es el de aceptación bajo el Lock, no el inicio de llamadas concurrentes.
+  Evita bloqueo global innecesario; no es FIFO global estricto. Ver el
+  [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
 - Un `Lock` protege el estado compartido y la asignación de espacios.
 - Evitar asignaciones duplicadas y liberaciones dobles del Semaphore.
 - El cierre temprano cancela solicitudes en espera; el cierre natural drena
@@ -56,5 +58,6 @@ de `ParkingLot`; Core se ejecuta dentro de ese proceso. El controlador de
 simulación gestiona IPC, no la `Queue` de eventos de Core. Esta implementación
 no demuestra por sí sola el cumplimiento académico. No trasladar la propiedad
 del estado ni cambiar unilateralmente la API pública de Core o el contrato de
-`ParkingEvent`. La política FIFO cuando el vehículo más antiguo está bloqueado
-sigue sin decidirse; ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
+`ParkingEvent`. La política FIFO entre elegibles, con FIFO estricto por puesto,
+es una decisión definitiva del responsable del proyecto; ver el
+[protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).

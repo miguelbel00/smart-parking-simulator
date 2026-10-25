@@ -26,8 +26,9 @@ El runtime implementa multiprocessing e IPC: un proceso de motor creado con
 multiprocessing transportan comandos, respuestas, eventos y ciertos registros
 de auditoría entre ese proceso y el proceso de la UI. Esto describe la
 implementación, pero no demuestra por sí solo el cumplimiento académico: la
-validación de los requisitos sigue pendiente. La política FIFO cuando el
-puesto del vehículo más antiguo está bloqueado también sigue sin decidirse.
+validación de los requisitos sigue pendiente. La política aprobada es FIFO
+entre solicitudes elegibles, con FIFO estricto por puesto autorizado; un puesto
+bloqueado no impide atender solicitudes elegibles de otros puestos.
 El profesor sugirió estudiar sesiones de usuario/usuarios concurrentes, pero
 no exigió ese diseño.
 
@@ -195,13 +196,16 @@ Tkinter. No agregar hilos por vehículo ni ubicar esperas de admisión o
 permanencia dentro de una solicitud. La separación funcional actual no implica
 que cada vehículo tenga su propio hilo o proceso.
 
-La regla académica de FIFO respeta el orden de llegada y da prioridad al
-vehículo que lleva más tiempo esperando cuando cumple su autorización y su
-puesto específico está disponible. Sigue pendiente definir qué ocurre si el
-vehículo más antiguo tiene bloqueado su puesto. El runtime actual busca
-solicitudes elegibles y mantiene FIFO estricto por puesto autorizado; no
-considerar ese comportamiento una decisión sobre la política académica aún
-pendiente.
+La política aprobada por el responsable del proyecto es FIFO entre solicitudes
+elegibles, con FIFO estricto por puesto autorizado. Si el puesto del más antiguo
+está ocupado, puede ingresar una solicitud posterior para otro puesto libre,
+sin reasignar puestos. Al liberarse el puesto bloqueado, tiene prioridad la
+solicitud más antigua que espera ese mismo recurso y continúa elegible.
+Esto evita bloqueo global innecesario y preserva el orden entre competidores
+por el mismo recurso; no es FIFO global estricto ni requiere otra autorización
+de la profesora. El orden de llegada es el de aceptación bajo el Lock, no el
+inicio de llamadas concurrentes a `admit`. No se garantiza un tiempo máximo de
+espera si el recurso no se libera; el cierre temprano cancela pendientes.
 
 ### Semaphore
 
@@ -411,6 +415,10 @@ La arquitectura implementada mantiene FIFO por elegibilidad y FIFO estricto
 entre solicitudes del mismo puesto autorizado. Solicitudes bloqueadas para un
 puesto no impiden progreso en otro puesto elegible.
 
+Esta política es el criterio de diseño aprobado. Su contrato y evidencia de
+pruebas están en `openspec/specs/parking-capacity/spec.md`; el estado de una
+revisión administrativa no determina por sí solo la corrección del algoritmo.
+
 El dominio de autorizaciones está definido en `simulation/authorizations.py`.
 El JSON se valida completo antes de iniciar los trabajadores y se entrega a
 core como registro inmutable. El orden de la secuencia del Simulator determina
@@ -612,8 +620,8 @@ datos sensibles y no añadir escritores independientes para el estado crítico.
   `spawn`, colas IPC con mensajes validados y un adaptador de transporte en el
   padre; el proceso de motor posee el estado de core. Mantener esta separación
   y no confundir la `queue.Queue` local de Tk con IPC. La conformidad académica
-  integral aún requiere validación. La política FIFO cuando el puesto del más
-  antiguo está bloqueado sigue sin decidirse. No cambiar unilateralmente el
+  integral aún requiere validación. La política FIFO entre elegibles y por puesto
+  ya fue aprobada por el responsable del proyecto. No cambiar unilateralmente el
   contrato `ParkingEvent` ni las APIs públicas. El logging hijo-padre tiene un
   escritor padre, pero su cobertura debe verificarse contra los requisitos de
   trazabilidad, no darse por completa.

@@ -60,7 +60,7 @@ The request lifecycle MUST follow one of these paths:
 
 The parking lot MUST use a semaphore to enforce configured capacity and synchronization via its lock/condition to protect shared request and slot state. A semaphore permit is acquired only when physical occupancy is committed and released exactly once on exit. Waiting requests MUST NOT hold permits.
 
-Only one request may occupy a physical slot at a time. The academic rule MUST respect arrival order and serve the longest-waiting request first when its authorization and specific slot permit service. The policy when the oldest request's slot is blocked remains unresolved. Current runtime behavior scans eligible requests and maintains strict FIFO among requests for the same authorized slot; it is not the final academic policy decision. The active-plate membership MUST prevent duplicate active requests and be released on either normal completion or cancellation. JSON authorization MUST bind a plate to its specific slot; reassignment is forbidden.
+Only one request may occupy a physical slot at a time. The project owner's approved policy MUST serve requests in acceptance order among eligible requests, with strict FIFO per authorized slot. If the oldest request's slot is occupied, an eligible request for another free authorized slot MAY proceed. This avoids unnecessary global blocking; it is not strict global FIFO. Arrival means acceptance under the core lock, not concurrent call start time. The active-plate membership MUST prevent duplicate active requests and be released on either normal completion or cancellation. JSON authorization MUST bind a plate to its specific slot; reassignment is forbidden.
 
 #### Scenario: Capacity remains bounded
 
@@ -100,18 +100,18 @@ The Simulator selects `cancel_pending` from whether an early stop was requested:
 - WHEN close returns
 - THEN pending requests have been drained or cancelled according to the close mode, parked requests have completed, and no lot worker remains active
 
-### Requirement: Multiprocessing and IPC remain an explicit academic gap
+### Requirement: Process ownership and IPC lifecycle
 
-The completed academic system MUST use real processes and inter-process
-communication. The current lifecycle is implemented with task-oriented threads
-and an in-process queue; it does not satisfy that requirement. Process roles,
-IPC mechanism, and ownership/synchronization of critical state remain pending
-team decisions. Do not introduce an implementation or change public contracts
-through this specification alone.
+The spawn engine MUST own the lifecycle state and task-oriented workers.
+Validated multiprocessing queues MUST carry commands, events and selected
+audit records to/from the parent. The parent transport MUST audit received
+events once and project them to the local Tk queue. A local queue alone is not
+IPC. This architecture is implemented; complete academic compliance still
+requires evidence against the applicable requirements.
 
-#### Scenario: Process architecture is agreed before implementation
+#### Scenario: Lifecycle terminals reach the parent before completion
 
-- GIVEN work to add the mandatory multiprocessing requirement
-- WHEN module and state ownership are designed
-- THEN process responsibilities, IPC, and synchronization are agreed with
-  affected modules before implementation
+- GIVEN accepted requests in a spawned run
+- WHEN the run drains or cancels pending requests
+- THEN terminals cross IPC before normal simulation finish
+- AND confirmed audit drain precedes declaring the audited run successful

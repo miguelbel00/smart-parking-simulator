@@ -23,10 +23,10 @@ The system MUST define frozen dataclass `ParkingEvent` with fields in this order
 
 Core MUST publish vehicle events through its supplied event queue. The UI consumes that shared queue; workers MUST NOT update Tkinter directly.
 
-The current event transport is an in-process `queue.Queue`, not IPC. The
-academic requirement for real multiprocessing and IPC is mandatory but not
-implemented; do not alter this queue contract or event payload without
-agreement on process ownership and transport.
+The engine uses validated multiprocessing IPC for commands, events and
+selected audit records. The parent transport delivers immutable events to the
+in-process Tk `queue.Queue`; that local queue is not IPC. `run_id` and origin
+metadata travel in the envelope without changing `ParkingEvent`.
 
 The authorization JSON MUST be validated as a complete registry before
 workers start, and each plate MUST remain bound to its configured specific
