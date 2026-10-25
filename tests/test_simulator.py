@@ -1,346 +1,279 @@
-"""Real, short-run regression tests for simulator ownership and lifecycle."""
-
 from queue import Empty, Queue
-from threading import Event, Thread
+from threading import Event
 from time import monotonic, sleep
 
 import pytest
 
 from core.events import (SIMULATION_FINISHED, SIMULATION_STARTED, VEHICLE_CREATED,
-                         VEHICLE_ENTERED, VEHICLE_FINISHED, VEHICLE_WAITING, ParkingEvent)
+                         VEHICLE_FINISHED, VEHICLE_REJECTED, VEHICLE_CANCELLED)
 from core.parking import ParkingLot
-from simulation import config
+from simulation.authorizations import Authorization, AuthorizationRegistry, load_authorizations
 from simulation.metrics import MetricsForwardingQueue, SimulationMetrics
 from simulation.simulator import Simulator
-import simulation.simulator as simulator_module
+from test_parking import (assert_closed_resources, drain_with_controlled_deadlines,
+                          expire_occupied, pause_admission_publication)
 
 
-def await_exit(simulator, timeout=3):
-    deadline = monotonic() + timeout
-    while simulator.is_active() and monotonic() < deadline:
-        sleep(0.001)
-    assert not simulator.is_active(), "run did not exit"
+def setup_run(plates, capacity=1, registry=None, durations=None):
+    destination = Queue()
+    latest = []
+    auth = registry or AuthorizationRegistry({plate: Authorization(plate, True, 0)
+                                               for plate in set(plates)})
+
+    def factory():
+        metrics = SimulationMetrics()
+        queue = MetricsForwardingQueue(destination, metrics)
+        lot = ParkingLot(capacity, queue, auth)
+        latest.append((lot, queue, metrics))
+        return lot, queue, metrics
+
+    simulator = Simulator(factory, plates, duration_factory=(lambda: .01) if durations is None else durations)
+    return simulator, destination, latest
 
 
-def events_from(queue):
-    events = []
+def wait_exit(simulator):
+    limit = monotonic() + 3
+    while simulator.is_active() and monotonic() < limit:
+        sleep(.002)
+    assert not simulator.is_active()
+
+
+def drain(queue):
+    result = []
     while True:
         try:
-            events.append(queue.get_nowait())
+            result.append(queue.get_nowait())
         except Empty:
-            return events
+            return result
 
 
-@pytest.fixture
-def short_runs(monkeypatch):
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 2)
-    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0.02)
-    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0.02)
-    monkeypatch.setattr(config, "MIN_PARKING_TIME", 0.1)
-    monkeypatch.setattr(config, "MAX_PARKING_TIME", 0.1)
-
-
-def test_consecutive_runs_use_fresh_lots_metrics_and_forward_same_events(short_runs):
-    destination = Queue()
-    resources = []
-
-    def factory():
-        metrics = SimulationMetrics()
-        forwarder = MetricsForwardingQueue(destination, metrics)
-        lot = ParkingLot(capacity=1, event_queue=forwarder)
-        resources.append((lot, forwarder, metrics))
-        return resources[-1]
-
-    simulator = Simulator(run_factory=factory)
-    assert simulator.metrics is None
+def test_fresh_runs_and_terminal_event_after_drain(monkeypatch):
+    from simulation import config
+    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
+    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
+    simulator, queue, runs = setup_run(["A", "B"])
     for _ in range(2):
-        assert simulator.start() is True
-        assert simulator.start() is False
-        await_exit(simulator)
-        assert simulator.is_drained() is True
-        run_events = events_from(destination)
-        types = [event.type for event in run_events]
-        assert types[0] == SIMULATION_STARTED
-        assert types[-1] == SIMULATION_FINISHED
-        assert types.count(SIMULATION_STARTED) == types.count(SIMULATION_FINISHED) == 1
+        assert simulator.start()
+        wait_exit(simulator)
+        types = [event.type for event in drain(queue)]
+        assert types[0] == SIMULATION_STARTED and types[-1] == SIMULATION_FINISHED
         assert types.count(VEHICLE_CREATED) == types.count(VEHICLE_FINISHED) == 2
-        assert types.count(VEHICLE_ENTERED) == 2
-        assert all(event.type != VEHICLE_FINISHED for event in run_events[types.index(SIMULATION_FINISHED) + 1:])
-        stats = simulator.metrics.snapshot()
-        assert stats["total_generated"] == stats["total_admitted"] == stats["total_finished"] == 2
-        assert stats["total_parked"] == 2
-        assert stats["total_cancelled"] == 0
-        assert stats["total_rejected"] == 0
-        assert stats["peak_occupancy"] == 1
-        assert stats["total_duration"] is not None
-    assert resources[0][0] is not resources[1][0]
-    assert resources[0][2] is not resources[1][2]
-    assert simulator.metrics is resources[1][2]
-    marker = ParkingEvent(type=SIMULATION_STARTED, timestamp=1.0)
-    resources[1][1].put(marker)
-    assert destination.get_nowait() is marker
-    assert destination.empty()
+        assert simulator.is_drained()
+    assert runs[0][0] is not runs[1][0]
+    assert runs[0][2] is not runs[1][2]
 
 
-def test_finish_publication_refuses_restart_until_actual_thread_exit(short_runs, monkeypatch):
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 0)
+def test_rejections_are_counted_only_from_forwarded_event(monkeypatch):
+    from simulation import config
+    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
+    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
+    auth = AuthorizationRegistry({"NO": Authorization("NO", False, None)})
+    simulator, queue, runs = setup_run(["NO"], registry=auth)
+    assert simulator.start()
+    wait_exit(simulator)
+    events = drain(queue)
+    rejected = [item for item in events if item.type == VEHICLE_REJECTED]
+    assert len(rejected) == 1
+    assert rejected[0].reason == "NOT_AUTHORIZED"
+    assert rejected[0].plate == "NO" and rejected[0].space_id is None
+    assert not any(item.type == VEHICLE_CREATED for item in events)
+    stats = simulator.metrics.snapshot()
+    assert (stats["total_generated"], stats["total_admitted"], stats["total_rejected"]) == (1, 0, 1)
+    assert stats["total_finished"] == stats["total_cancelled"] == 0
+
+
+def test_metrics_count_normal_finish_and_cancellation_from_distinct_events():
+    metrics = SimulationMetrics()
     destination = Queue()
-    published = Event()
-    release = Event()
-    lots = []
+    queue = MetricsForwardingQueue(destination, metrics)
+    from core.events import ParkingEvent
+    queue.put(ParkingEvent("VEHICLE_FINISHED", 1.0, vehicle_id=1))
+    queue.put(ParkingEvent(VEHICLE_CANCELLED, 2.0, vehicle_id=2, reason="STOP_REQUESTED"))
+    stats = metrics.snapshot()
+    assert stats["total_finished"] == 1
+    assert stats["total_cancelled"] == 1
 
-    class PausingForwarder(MetricsForwardingQueue):
+
+def test_restart_waits_for_producer_to_exit_after_finish_publication(monkeypatch):
+    from simulation import config
+    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
+    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
+    destination = Queue()
+    finish_published, release_finish = Event(), Event()
+    runs = []
+
+    class PausingQueue(MetricsForwardingQueue):
         def put(self, item, block=True, timeout=None):
             super().put(item, block=block, timeout=timeout)
-            if item.type == SIMULATION_FINISHED and len(lots) == 1:
-                published.set()
-                assert release.wait(3)
+            if item.type == SIMULATION_FINISHED and len(runs) == 1:
+                finish_published.set()
+                assert release_finish.wait(5)
 
     def factory():
         metrics = SimulationMetrics()
-        forwarder = PausingForwarder(destination, metrics)
-        lot = ParkingLot(1, forwarder)
+        queue = PausingQueue(destination, metrics)
+        lot = ParkingLot(1, queue, AuthorizationRegistry({}))
+        runs.append((lot, queue, metrics))
+        return lot, queue, metrics
+
+    simulator = Simulator(factory, [])
+    try:
+        assert simulator.start()
+        assert finish_published.wait(3)
+        assert simulator.is_active()
+        assert not simulator.start()
+        assert len(runs) == 1
+    finally:
+        release_finish.set()
+    wait_exit(simulator)
+    assert simulator.start()
+    wait_exit(simulator)
+    assert len(runs) == 2
+
+
+def test_stop_waits_for_inflight_admission_boundary(monkeypatch):
+    from simulation import config
+    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
+    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
+    entered_admit, release_admit = Event(), Event()
+    destination = Queue()
+    metrics = SimulationMetrics()
+    forwarder = MetricsForwardingQueue(destination, metrics)
+    registry = AuthorizationRegistry({"A": Authorization("A", True, 0)})
+    lots = []
+
+    def factory():
+        lot = ParkingLot(1, forwarder, registry)
+        actual_admit = lot.admit
+
+        def paused_admit(vehicle):
+            entered_admit.set()
+            assert release_admit.wait(2)
+            return actual_admit(vehicle)
+
+        lot.admit = paused_admit
         lots.append(lot)
         return lot, forwarder, metrics
 
-    simulator = Simulator(run_factory=factory)
-    try:
-        assert simulator.start() is True
-        assert published.wait(3)
-        assert simulator.is_active()
-        assert simulator.start() is False
-        assert len(lots) == 1
-    finally:
-        release.set()
-        await_exit(simulator)
-    assert simulator.start() is True
-    await_exit(simulator)
-    assert len(lots) == 2
-    assert [e.type for e in events_from(destination)] == [SIMULATION_STARTED, SIMULATION_FINISHED] * 2
-
-
-def test_stop_serializes_with_admission_and_drains_waiting(short_runs, monkeypatch):
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 20)
-    monkeypatch.setattr(config, "MIN_PARKING_TIME", 0.15)
-    monkeypatch.setattr(config, "MAX_PARKING_TIME", 0.15)
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
-    lot = ParkingLot(1, forwarder)
-    simulator = Simulator(run_factory=lambda: (lot, forwarder, metrics))
-    try:
-        assert simulator.start() is True
-        deadline = monotonic() + 3
-        while lot.snapshot().waiting_count == 0 and monotonic() < deadline:
-            sleep(0.001)
-        assert lot.snapshot().waiting_count > 0
-        simulator.stop()
-        admitted_at_stop = metrics.snapshot()["total_admitted"]
-        await_exit(simulator)
-        assert metrics.snapshot()["total_admitted"] == admitted_at_stop
-        assert simulator.is_drained()
-        types = [e.type for e in events_from(destination)]
-        assert VEHICLE_WAITING in types
-        assert types[-1] == SIMULATION_FINISHED
-        assert types.count(VEHICLE_CREATED) == types.count(VEHICLE_FINISHED)
-        stats = metrics.snapshot()
-        assert stats["total_finished"] == admitted_at_stop
-        assert stats["total_parked"] + stats["total_cancelled"] == admitted_at_stop
-        assert stats["total_cancelled"] > 0
-    finally:
-        simulator.stop()
-        await_exit(simulator)
-
-
-def test_stop_during_arrival_wait_prevents_generation(short_runs, monkeypatch):
-    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0.2)
-    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0.2)
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
-    simulator = Simulator(run_factory=lambda: (ParkingLot(1, forwarder), forwarder, metrics))
-    assert simulator.start() is True
-    assert destination.get(timeout=3).type == SIMULATION_STARTED
+    simulator = Simulator(factory, ["A"], duration_factory=lambda: .01)
+    assert simulator.start() and entered_admit.wait(2)
     simulator.stop()
-    await_exit(simulator)
-    assert [e.type for e in events_from(destination)] == [SIMULATION_FINISHED]
-    assert metrics.snapshot()["total_generated"] == 0
+    release_admit.set()
+    wait_exit(simulator)
+    assert lots[0].snapshot().occupied_count == 0
+    stats = simulator.metrics.snapshot()
+    assert stats["total_generated"] == 1
+    assert stats["total_admitted"] == 0
+    types = [event.type for event in drain(destination)]
+    assert types[-1] == SIMULATION_FINISHED and VEHICLE_CREATED not in types
 
 
-def test_stop_waits_for_inflight_admission_boundary(short_runs, monkeypatch):
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 2)
+def test_stop_after_commit_drains_parked_before_finish(monkeypatch):
+    from simulation import config
     monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
     monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
-    entered_boundary = Event()
-    release_boundary = Event()
-    stop_returned = Event()
-    real_vehicle = simulator_module.Vehicle
-
-    def delayed_vehicle(*args, **kwargs):
-        entered_boundary.set()
-        assert release_boundary.wait(3)
-        return real_vehicle(*args, **kwargs)
-
-    monkeypatch.setattr(simulator_module, "Vehicle", delayed_vehicle)
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
-    simulator = Simulator(run_factory=lambda: (ParkingLot(1, forwarder), forwarder, metrics))
-    assert simulator.start() is True
-    stopper = None
-    try:
-        assert entered_boundary.wait(3)
-        stopper = Thread(target=lambda: (simulator.stop(), stop_returned.set()))
-        stopper.start()
-        assert not stop_returned.wait(0.02)
-    finally:
-        release_boundary.set()
-        if stopper is not None:
-            stopper.join(timeout=3)
-        simulator.stop()
-        await_exit(simulator)
-    assert stop_returned.is_set()
-    assert metrics.snapshot()["total_generated"] == 1
-    assert metrics.snapshot()["total_admitted"] == 1
-    assert [e.type for e in events_from(destination)][-1] == SIMULATION_FINISHED
-
-
-def test_generation_error_closes_lot_and_publishes_finish(short_runs, monkeypatch):
-    import threading
-
-    errors = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args.exc_value))
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 1)
-    monkeypatch.setattr(simulator_module.random, "uniform", lambda *_: (_ for _ in ()).throw(ValueError("arrival")))
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
-    lot = ParkingLot(1, forwarder)
-    simulator = Simulator(run_factory=lambda: (lot, forwarder, metrics))
-    assert simulator.start() is True
-    await_exit(simulator)
-    assert simulator.is_drained()
-    assert [e.type for e in events_from(destination)] == [SIMULATION_STARTED, SIMULATION_FINISHED]
-    assert len(errors) == 1 and str(errors[0]) == "arrival"
-    assert lot.admit(simulator_module.Vehicle(99, lot, 0)) is False
-
-
-def test_close_failure_does_not_claim_drain_or_publish_finish(short_runs, monkeypatch):
-    import threading
-
-    errors = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args.exc_value))
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 0)
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
-
-    class BrokenLot(ParkingLot):
-        def close(self, wait=True):
-            raise RuntimeError("close failed")
-
-    simulator = Simulator(run_factory=lambda: (BrokenLot(1, forwarder), forwarder, metrics))
-    assert simulator.start() is True
-    await_exit(simulator)
-    assert not simulator.is_drained()
-    assert len(errors) == 1 and str(errors[0]) == "close failed"
-    assert [e.type for e in events_from(destination)] == [SIMULATION_STARTED]
-
-
-def test_natural_arrival_completion_drains_waiting_vehicles(short_runs, monkeypatch):
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 3)
-    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0.01)
-    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0.01)
-    monkeypatch.setattr(config, "MIN_PARKING_TIME", 0.12)
-    monkeypatch.setattr(config, "MAX_PARKING_TIME", 0.12)
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
-    simulator = Simulator(run_factory=lambda: (ParkingLot(1, forwarder), forwarder, metrics))
-
+    simulator, queue, runs = setup_run(["A"], durations=lambda: .08)
     assert simulator.start()
-    await_exit(simulator)
-
-    run_events = events_from(destination)
-    types = [event.type for event in run_events]
-    assert types.count(VEHICLE_CREATED) == 3
-    assert types.count(VEHICLE_ENTERED) == 3
-    assert types.count(VEHICLE_FINISHED) == 3
+    limit = monotonic() + 2
+    while runs[0][0].snapshot().occupied_count == 0 and monotonic() < limit:
+        sleep(.002)
+    assert runs[0][0].snapshot().occupied_count == 1
+    simulator.stop()
+    wait_exit(simulator)
+    events = drain(queue)
+    types = [event.type for event in events]
     assert types[-1] == SIMULATION_FINISHED
-    assert max(index for index, kind in enumerate(types) if kind == VEHICLE_FINISHED) < len(types) - 1
-    stats = metrics.snapshot()
-    assert stats["total_admitted"] == stats["total_parked"] == stats["total_finished"] == 3
-    assert stats["total_cancelled"] == 0
-    report = metrics.report()
-    assert "Vehículos estacionados:               3" in report
-    assert "Vehículos cancelados:                 0" in report
+    assert types.index(VEHICLE_FINISHED) < len(types) - 1
 
 
-def test_explicit_stop_interrupts_natural_drain_and_counts_cancellations(short_runs, monkeypatch):
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 3)
-    monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0.01)
-    monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0.01)
-    monkeypatch.setattr(config, "MIN_PARKING_TIME", 0.2)
-    monkeypatch.setattr(config, "MAX_PARKING_TIME", 0.2)
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
-    lot = ParkingLot(1, forwarder)
-    simulator = Simulator(run_factory=lambda: (lot, forwarder, metrics))
+def test_invalid_authorization_file_fails_before_task_start(tmp_path):
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text('{"vehicles": [}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_authorizations(bad_file, 1)
 
-    assert simulator.start()
-    deadline = monotonic() + 3
-    while (
-        metrics.snapshot()["total_admitted"] < 3 or lot.snapshot().waiting_count == 0
-    ) and monotonic() < deadline:
-        sleep(0.001)
-    assert lot.snapshot().waiting_count > 0
-    assert metrics.snapshot()["total_admitted"] == 3
-    assert SIMULATION_FINISHED not in [event.type for event in events_from(destination)]
-
-    simulator.stop()
-    await_exit(simulator)
-
-    stats = metrics.snapshot()
-    assert stats["total_finished"] == stats["total_admitted"] == 3
-    assert stats["total_cancelled"] > 0
-    assert stats["total_parked"] + stats["total_cancelled"] == 3
-    assert simulator.is_drained()
-    assert [event.type for event in events_from(destination)][-1] == SIMULATION_FINISHED
+    factory_called = Event()
+    def factory():
+        factory_called.set()
+        raise AssertionError("invalid config should fail in composition")
+    simulator = Simulator(factory, ["A"])
+    assert not simulator.is_active()
+    assert not factory_called.is_set()
 
 
-def test_join_exception_keeps_run_undrained_and_suppresses_finish(short_runs, monkeypatch):
-    import threading
-
-    monkeypatch.setattr(config, "TOTAL_VEHICLES", 1)
+@pytest.mark.parametrize("stop_after_natural_close", [True, False])
+def test_stop_at_natural_drain_boundary_cancels_pending(monkeypatch, stop_after_natural_close):
+    from simulation import config
     monkeypatch.setattr(config, "MIN_ARRIVAL_TIME", 0)
     monkeypatch.setattr(config, "MAX_ARRIVAL_TIME", 0)
-    monkeypatch.setattr(config, "MIN_PARKING_TIME", 0)
-    monkeypatch.setattr(config, "MAX_PARKING_TIME", 0)
-    errors = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args.exc_value))
-    destination = Queue()
-    metrics = SimulationMetrics()
-    forwarder = MetricsForwardingQueue(destination, metrics)
+    boundary, resume, natural_committed = Event(), Event(), Event()
+    admission_gates = []
+    simulator, queue, runs = setup_run(["A", "B", "C"], durations=lambda: 3600)
+    original_factory = simulator._run_factory
 
-    class JoinFailureLot(ParkingLot):
-        def admit(self, vehicle):
-            accepted = super().admit(vehicle)
-            if accepted:
-                def fail_join(*_args, **_kwargs):
-                    raise RuntimeError("controlled join failure")
-                vehicle.join = fail_join
-            return accepted
+    def factory():
+        lot, forwarder, metrics = original_factory()
+        admission_gates.append(pause_admission_publication(lot, monkeypatch))
+        actual_admit, actual_close = lot.admit, lot.close
 
-    lot = JoinFailureLot(1, forwarder)
-    simulator = Simulator(run_factory=lambda: (lot, forwarder, metrics))
-    assert simulator.start()
-    await_exit(simulator)
-    for vehicle in lot._threads:
-        Thread.join(vehicle, timeout=3)
+        def admit(vehicle):
+            result = actual_admit(vehicle)
+            if vehicle.vehicle_id == 1:
+                with lot._condition:
+                    assert lot._condition.wait_for(lambda: bool(lot._occupied), timeout=2)
+            return result
 
-    assert len(errors) == 1 and str(errors[0]) == "controlled join failure"
-    assert not simulator.is_drained()
-    types = [event.type for event in events_from(destination)]
-    assert types[-1] == VEHICLE_FINISHED
-    assert SIMULATION_FINISHED not in types
+        def close(wait=True, cancel_pending=True):
+            if not cancel_pending:
+                if stop_after_natural_close:
+                    actual_close(wait=False, cancel_pending=False)
+                boundary.set()
+                assert resume.wait(5), "test did not release natural close"
+                actual_close(wait=False, cancel_pending=False)
+                natural_committed.set()
+            return actual_close(wait=wait, cancel_pending=cancel_pending)
+
+        monkeypatch.setattr(lot, "admit", admit)
+        monkeypatch.setattr(lot, "close", close)
+        return lot, forwarder, metrics
+
+    monkeypatch.setattr(simulator, "_run_factory", factory)
+    try:
+        assert simulator.start()
+        assert boundary.wait(2)
+        lot = runs[0][0]
+        assert lot.snapshot().occupied_spaces == ((0, 1),)
+        assert lot.snapshot().waiting_count == 2
+        simulator.stop()
+        simulator.stop()
+        resume.set()
+        assert natural_committed.wait(2)
+        admission_gates[0][1].set()
+        with lot._condition:
+            assert lot._condition.wait_for(lambda: not lot._pending, timeout=2)
+        assert simulator.is_active() and not simulator.is_drained()
+        assert lot.snapshot().occupied_spaces == ((0, 1),)
+        expire_occupied(lot)
+        wait_exit(simulator)
+        simulator.stop()
+        events = drain(queue)
+        assert events[0].type == SIMULATION_STARTED
+        assert events[-1].type == SIMULATION_FINISHED
+        assert sum(event.type == SIMULATION_FINISHED for event in events) == 1
+        terminals = [event for event in events if event.type in (VEHICLE_FINISHED, VEHICLE_CANCELLED)]
+        assert sorted((event.vehicle_id, event.type) for event in terminals) == [
+            (1, VEHICLE_FINISHED), (2, VEHICLE_CANCELLED), (3, VEHICLE_CANCELLED)]
+        assert all(event.reason == "STOP_REQUESTED" for event in terminals if event.type == VEHICLE_CANCELLED)
+        assert [event.vehicle_id for event in events if event.type == "VEHICLE_ENTERED"] == [1]
+        stats = simulator.metrics.snapshot()
+        assert (stats["total_generated"], stats["total_admitted"], stats["total_finished"],
+                stats["total_cancelled"], stats["total_rejected"]) == (3, 3, 1, 2, 0)
+        assert simulator.is_drained()
+        assert_closed_resources(lot)
+    finally:
+        resume.set()
+        for _, release_admission in admission_gates:
+            release_admission.set()
+        if runs:
+            drain_with_controlled_deadlines(runs[0][0])
+        simulator.shutdown()

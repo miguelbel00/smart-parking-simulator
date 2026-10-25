@@ -1,34 +1,81 @@
 """Entry point for the parking simulator."""
 
 from queue import Queue
+import sys
 
-from core.parking import ParkingLot
 from simulation import config
-from simulation.metrics import MetricsForwardingQueue, SimulationMetrics
-from simulation.simulator import Simulator
+from simulation.audit_logging import AuditSession
+from simulation.authorizations import load_authorizations
+from simulation.multiprocess import MultiprocessController
 from ui.interface import ParkingApp
+from ui.multiprocess_adapter import MultiprocessGUIAdapter
 
 
 def main() -> None:
     """Compose the modules and run the parking simulator."""
-    ui_queue: Queue = Queue()
+    audit = AuditSession()
+    simulator: MultiprocessGUIAdapter | None = None
+    primary_error: BaseException | None = None
+    try:
+        ui_queue: Queue = Queue()
 
-    def run_factory() -> tuple[ParkingLot, MetricsForwardingQueue, SimulationMetrics]:
-        metrics = SimulationMetrics()
-        event_queue = MetricsForwardingQueue(destination=ui_queue, metrics=metrics)
-        parking = ParkingLot(capacity=config.PARKING_CAPACITY, event_queue=event_queue)
-        return parking, event_queue, metrics
+        registry = load_authorizations(config.AUTHORIZATION_FILE, config.PARKING_CAPACITY)
+        payload = {
+            "config": {
+                "capacity": config.PARKING_CAPACITY,
+                "total_vehicles": config.TOTAL_VEHICLES,
+                "min_arrival_time": config.MIN_ARRIVAL_TIME,
+                "max_arrival_time": config.MAX_ARRIVAL_TIME,
+                "min_parking_time": config.MIN_PARKING_TIME,
+                "max_parking_time": config.MAX_PARKING_TIME,
+            },
+            "authorization": {"vehicles": [
+                {"plate": item.plate, "authorized": item.authorized, "space_id": item.space_id}
+                for item in registry.records.values()
+            ]},
+            "plate_sequence": list(config.PLATE_SEQUENCE),
+        }
+        controller = MultiprocessController(config.PARKING_CAPACITY, audit=audit)
+        simulator = MultiprocessGUIAdapter(controller, ui_queue, lambda: payload)
+        simulator.start_engine()
 
-    simulator = Simulator(run_factory=run_factory)
+        app = ParkingApp(
+            event_queue=ui_queue,
+            simulator=simulator,
+            capacity=config.PARKING_CAPACITY,
+        )
+        app.run()
+    except BaseException as error:
+        primary_error = error
+        try:
+            audit.exception("application", None, error)
+        except BaseException as audit_error:
+            print(f"Audit exception reporting failed: {audit_error}", file=sys.stderr)
+        raise
+    finally:
+        try:
+            if simulator is not None:
+                try:
+                    if not simulator.shutdown_complete:
+                        simulator.shutdown_async()
+                        if simulator.error is not None:
+                            raise simulator.error
+                except BaseException as error:
+                    if primary_error is None:
+                        raise
+                    try:
+                        audit.exception("shutdown", None, error)
+                    except BaseException as audit_error:
+                        print(f"Audit exception reporting failed: {audit_error}", file=sys.stderr)
+        finally:
+            try:
+                audit.close()
+            except BaseException as error:
+                if primary_error is None:
+                    raise
+                print(f"Audit close failed: {error}", file=sys.stderr)
 
-    app = ParkingApp(
-        event_queue=ui_queue,
-        simulator=simulator,
-        capacity=config.PARKING_CAPACITY,
-    )
-    app.run()
-
-    if simulator.metrics is not None:
+    if simulator is not None and simulator.metrics is not None:
         print(simulator.metrics.report())
 
 

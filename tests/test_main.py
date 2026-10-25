@@ -1,64 +1,54 @@
 """Composition test without constructing a Tk root."""
 
-from queue import Empty
-from time import monotonic, sleep
+from queue import Queue
+
+from simulation.authorizations import Authorization, AuthorizationRegistry
 
 import main as entry
 
 
-def test_main_composes_fresh_runs_and_reports_only_latest(monkeypatch, capsys):
-    monkeypatch.setattr(entry.config, "PARKING_CAPACITY", 2)
-    monkeypatch.setattr(entry.config, "TOTAL_VEHICLES", 1)
-    monkeypatch.setattr(entry.config, "MIN_ARRIVAL_TIME", 0)
-    monkeypatch.setattr(entry.config, "MAX_ARRIVAL_TIME", 0)
-    monkeypatch.setattr(entry.config, "MIN_PARKING_TIME", 0)
-    monkeypatch.setattr(entry.config, "MAX_PARKING_TIME", 0)
-    observed = []
-    lots = []
-    real_lot = entry.ParkingLot
+def test_main_composes_ipc_controller_with_validated_payload(monkeypatch, tmp_path):
+    from simulation.audit_logging import AuditSession
+    monkeypatch.setattr(entry, "AuditSession", lambda: AuditSession(tmp_path / "logs"))
+    monkeypatch.setattr(entry.config, "PLATE_SEQUENCE", ("EDU-001", "EDU-002"))
+    monkeypatch.setattr(entry, "load_authorizations", lambda *_: AuthorizationRegistry({
+        "EDU-001": Authorization("EDU-001", True, 0),
+    }))
+    observed = {}
 
-    def capture_lot(capacity, event_queue):
-        lot = real_lot(capacity=capacity, event_queue=event_queue)
-        lots.append(lot)
-        return lot
+    class FakeController:
+        def __init__(self, capacity, audit):
+            observed.update(capacity=capacity, audit=audit)
 
-    monkeypatch.setattr(entry, "ParkingLot", capture_lot)
+    class FakeAdapter:
+        def __init__(self, controller, event_queue, payload_factory):
+            observed.update(controller=controller, queue=event_queue, payload=payload_factory())
+            self.metrics = None
+            self.shutdown_complete = True
+            self.error = None
+        def start_engine(self): pass
+        def shutdown_async(self): pass
 
     class FakeApp:
         def __init__(self, event_queue, simulator, capacity):
-            assert capacity == 2
-            self.event_queue = event_queue
-            self.simulator = simulator
+            assert event_queue is observed["queue"]
+            assert capacity == observed["capacity"]
+        def run(self): pass
 
-        def run(self):
-            for _ in range(2):
-                assert self.simulator.start() is True
-                deadline = monotonic() + 3
-                while self.simulator.is_active() and monotonic() < deadline:
-                    sleep(0.001)
-                assert not self.simulator.is_active()
-                assert self.simulator.is_drained()
-                observed.append(self.simulator.metrics)
-            events = []
-            while True:
-                try:
-                    events.append(self.event_queue.get_nowait())
-                except Empty:
-                    break
-            assert [e.type for e in events].count("SIMULATION_STARTED") == 2
-            assert [e.type for e in events].count("SIMULATION_FINISHED") == 2
-
+    monkeypatch.setattr(entry, "MultiprocessController", FakeController)
+    monkeypatch.setattr(entry, "MultiprocessGUIAdapter", FakeAdapter)
     monkeypatch.setattr(entry, "ParkingApp", FakeApp)
     entry.main()
-    assert len(lots) == 2 and lots[0] is not lots[1]
-    assert all(lot.capacity == 2 for lot in lots)
-    assert observed[0] is not observed[1]
-    assert observed[0].snapshot()["total_generated"] == 1
-    assert observed[1].snapshot()["total_generated"] == 1
-    assert capsys.readouterr().out == observed[1].report() + "\n"
+    assert observed["payload"]["plate_sequence"] == ["EDU-001", "EDU-002"]
+    assert observed["payload"]["authorization"]["vehicles"] == [
+        {"plate": "EDU-001", "authorized": True, "space_id": 0}
+    ]
+    assert observed["payload"]["config"]["capacity"] == observed["capacity"]
 
 
-def test_main_without_run_does_not_print_statistics(monkeypatch, capsys):
+def test_main_without_run_does_not_print_statistics(monkeypatch, capsys, tmp_path):
+    from simulation.audit_logging import AuditSession
+    monkeypatch.setattr(entry, "AuditSession", lambda: AuditSession(tmp_path / "logs"))
     class FakeApp:
         def __init__(self, event_queue, simulator, capacity):
             pass
@@ -66,6 +56,87 @@ def test_main_without_run_does_not_print_statistics(monkeypatch, capsys):
         def run(self):
             pass
 
+    class FakeAdapter:
+        metrics = None
+        shutdown_complete = True
+        error = None
+        def __init__(self, *args): pass
+        def start_engine(self): pass
+        def shutdown_async(self): pass
+    monkeypatch.setattr(entry, "MultiprocessController", lambda *args, **kwargs: object())
+    monkeypatch.setattr(entry, "MultiprocessGUIAdapter", FakeAdapter)
     monkeypatch.setattr(entry, "ParkingApp", FakeApp)
     entry.main()
     assert capsys.readouterr().out == ""
+
+
+def test_invalid_authorization_file_prevents_controller_start(monkeypatch, tmp_path):
+    from simulation.audit_logging import AuditSession
+    monkeypatch.setattr(entry, "AuditSession", lambda: AuditSession(tmp_path / "logs"))
+    bad_file = tmp_path / "invalid.json"
+    bad_file.write_text('{"vehicles": [}', encoding="utf-8")
+    monkeypatch.setattr(entry.config, "AUTHORIZATION_FILE", bad_file)
+    monkeypatch.setattr(entry.config, "PLATE_SEQUENCE", ("A",))
+
+    import pytest
+    with pytest.raises(ValueError):
+        entry.main()
+
+
+def test_app_error_is_audited_before_shutdown_and_close(monkeypatch, tmp_path, capsys):
+    from simulation.audit_logging import AuditSession
+
+    error = RuntimeError("application failed")
+    cleanup_error = ValueError("shutdown failed")
+    close_error = OSError("close failed")
+    audit = AuditSession(tmp_path / "logs")
+    monkeypatch.setattr(entry, "AuditSession", lambda: audit)
+    order = []
+
+    class FakeAdapter:
+        metrics = None
+        shutdown_complete = False
+        error = cleanup_error
+        def __init__(self, *args): pass
+        def start_engine(self): pass
+        def shutdown_async(self): order.append("shutdown")
+        class Thread:
+            def join(self): pass
+        _thread = Thread()
+
+    original_close = audit.close
+
+    def tracked_close():
+        order.append("close")
+        original_close()
+        content = audit.path.read_text(encoding="utf-8")
+        assert "exception_type=RuntimeError" in content
+        assert audit._records.unfinished_tasks == 0
+        raise close_error
+
+    audit.close = tracked_close
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self):
+            raise error
+
+    monkeypatch.setattr(entry, "MultiprocessController", lambda *args, **kwargs: object())
+    monkeypatch.setattr(entry, "MultiprocessGUIAdapter", FakeAdapter)
+    monkeypatch.setattr(entry, "ParkingApp", FakeApp)
+    import pytest
+    with pytest.raises(RuntimeError) as raised:
+        entry.main()
+
+    assert raised.value is error
+    assert order == ["shutdown", "close"]
+    content = audit.path.read_text(encoding="utf-8")
+    assert content.count("exception_type=RuntimeError") == 1
+    assert "application failed" in content
+    assert "RuntimeError: application failed" in content
+    assert content.count("exception_type=ValueError") == 1
+    assert content.count("shutdown failed") == 1
+    assert "close failed" in capsys.readouterr().err
+    assert audit._records.unfinished_tasks == 0

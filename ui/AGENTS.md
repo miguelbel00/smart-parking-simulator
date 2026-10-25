@@ -1,5 +1,20 @@
 # UI Agent Instructions
 
+## Integración actual
+
+Core representa vehículos como datos de solicitud y actualmente ejecuta
+trabajadores orientados a tareas. Su búsqueda de puestos elegibles y FIFO
+estricto dentro de cada puesto autorizado son la política aprobada por el
+responsable del proyecto. Si el puesto del más antiguo está ocupado, una
+solicitud posterior puede ingresar a otro puesto autorizado libre; no es FIFO
+global estricto ni permite reasignar puestos. `AdmissionResult` y sus motivos de rechazo están conectados al
+runtime; rechazos emiten `VEHICLE_REJECTED` y pendientes cancelados por cierre
+temprano emiten `VEHICLE_CANCELLED`. La UI sigue siendo solo consumidora de los
+eventos y no administra la admisión. El runtime usa un proceso de motor
+`spawn`; el adaptador ejecuta un hilo de transporte en el proceso padre y
+reenvía los eventos IPC a la cola local de Tk. Esto describe la implementación,
+no valida por sí solo el cumplimiento académico; ver el [protocolo raíz](../AGENTS.md#18-protocolo-de-trabajo-y-decisiones-académicas-pendientes).
+
 ## Responsable
 
 Persona B — Interfaz gráfica.
@@ -29,17 +44,19 @@ Implementar:
 Tkinter solamente puede ser actualizado desde el hilo principal.
 
 
-Nunca actualizar widgets desde Vehicle Threads.
+Nunca actualizar widgets desde hilos trabajadores ni procesos secundarios.
+La comunicación entre procesos existente no habilita llamadas Tkinter
+fuera del hilo principal.
 
 
 ## Comunicación
 
-La interfaz recibe eventos mediante:
+El hilo de transporte entrega eventos al hilo principal de Tk mediante una
+`queue.Queue` local al proceso de la UI. Esta cola NO es IPC. El transporte
+entre el proceso padre y el proceso de motor usa colas `multiprocessing` y el
+protocolo validado descrito en el [contrato raíz](../AGENTS.md#4-contrato-entre-módulos).
 
-queue.Queue
-
-
-Debe consultar periódicamente la cola:
+Tk debe consultar periódicamente la cola local:
 
 root.after(intervalo, process_events)
 
@@ -58,6 +75,8 @@ VEHICLE_WAITING
 VEHICLE_ENTERED
 VEHICLE_EXITED
 VEHICLE_FINISHED
+VEHICLE_REJECTED
+VEHICLE_CANCELLED
 SIMULATION_STARTED
 SIMULATION_FINISHED
 
@@ -78,9 +97,24 @@ La UI representa el estado.
 
 El core determina el estado.
 
+## Errores durante el polling
+
+La UI mantiene un único callback normal de polling y no reproduce ni reinserta
+un evento consumido tras un fallo parcial de widgets. Antes de renderizar,
+calcula la siguiente proyección canónica. Ante el primer fallo por ejecución,
+reconstruye una sola vez puestos, placas, espera y contadores desde ese estado;
+no vuelve a registrar métricas ni a despachar el evento. Si la reconstrucción
+falla o el error se repite, solicita Stop/cierre y drena eventos sin reutilizar
+la ruta de widgets fallida. Una vista irrecuperable queda explícitamente fallida,
+no se presenta como una finalización visual coherente.
+
+`MultiprocessGUIAdapter.report_ui_error` registra el diagnóstico con la sesión
+de auditoría padre existente; si no está disponible, se usa el reporte de Tk o
+stderr. No cambia IPC, eventos ni el escritor. El cierre no depende del éxito
+de un widget de estado, y el reinicio sigue esperando drenaje real del motor.
+
 ## Reglas compartidas
 
-Seguir los requisitos de base de datos y flujo Git del
-[AGENTS.md raíz](../AGENTS.md).
-La UI no realiza operaciones de base de datos; la propiedad e integración de
-la persistencia deben acordarse antes de asignarlas a un módulo.
+La persistencia con SQLite está explícitamente excluida del alcance actual; no
+agregar trabajo de base de datos en la UI salvo que el alcance del proyecto se
+modifique por separado. Seguir las reglas de Git del [AGENTS.md raíz](../AGENTS.md).

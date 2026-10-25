@@ -1,7 +1,11 @@
 """Simulation configuration."""
 
+from pathlib import Path
+
 PARKING_CAPACITY = 5
 TOTAL_VEHICLES = 15
+AUTHORIZATION_FILE = Path(__file__).with_name("default_authorizations.json")
+PLATE_SEQUENCE = tuple(f"EDU-{number:03d}" for number in range(1, TOTAL_VEHICLES + 1))
 
 MIN_ARRIVAL_TIME = 1
 MAX_ARRIVAL_TIME = 4

@@ -72,6 +72,8 @@ class ParkingProjection:
         elif event.type == "VEHICLE_FINISHED" and event.vehicle_id is not None:
             self.waiting.discard(event.vehicle_id)
             self._finished.add(event.vehicle_id)
+        elif event.type == "VEHICLE_CANCELLED" and event.vehicle_id is not None:
+            self.waiting.discard(event.vehicle_id)
         return None
 
     def reconcile_snapshot(self, snapshot: ParkingSnapshot) -> None:

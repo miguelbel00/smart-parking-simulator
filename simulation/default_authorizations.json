@@ -1,0 +1,20 @@
+{
+  "vehicles": [
+    {"plate": "EDU-001", "authorized": true, "space_id": 0},
+    {"plate": "EDU-002", "authorized": true, "space_id": 1},
+    {"plate": "EDU-003", "authorized": true, "space_id": 2},
+    {"plate": "EDU-004", "authorized": true, "space_id": 3},
+    {"plate": "EDU-005", "authorized": true, "space_id": 4},
+    {"plate": "EDU-006", "authorized": true, "space_id": 0},
+    {"plate": "EDU-007", "authorized": true, "space_id": 1},
+    {"plate": "EDU-008", "authorized": true, "space_id": 2},
+    {"plate": "EDU-009", "authorized": true, "space_id": 3},
+    {"plate": "EDU-010", "authorized": true, "space_id": 4},
+    {"plate": "EDU-011", "authorized": true, "space_id": 0},
+    {"plate": "EDU-012", "authorized": true, "space_id": 1},
+    {"plate": "EDU-013", "authorized": true, "space_id": 2},
+    {"plate": "EDU-014", "authorized": true, "space_id": 3},
+    {"plate": "EDU-015", "authorized": true, "space_id": 4},
+    {"plate": "VISITOR-001", "authorized": false, "space_id": null}
+  ]
+}

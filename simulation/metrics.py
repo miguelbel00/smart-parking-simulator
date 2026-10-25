@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from threading import Lock
+import multiprocessing
+import os
+from threading import Lock, current_thread
 from typing import TYPE_CHECKING, Any
 
 from core.events import (
     SIMULATION_FINISHED,
     SIMULATION_STARTED,
     VEHICLE_ENTERED,
+    VEHICLE_CANCELLED,
     VEHICLE_EXITED,
     VEHICLE_FINISHED,
     VEHICLE_WAITING,
+    VEHICLE_REJECTED,
 )
 
 if TYPE_CHECKING:
@@ -64,6 +68,8 @@ class SimulationMetrics:
                 if event.vehicle_id is not None:
                     self._currently_waiting.add(event.vehicle_id)
                     self._peak_waiting = max(self._peak_waiting, len(self._currently_waiting))
+            elif event.type == VEHICLE_REJECTED:
+                self._rejected += 1
             elif event.type == VEHICLE_ENTERED:
                 if event.waiting_time is not None:
                     self._waiting_times.append(event.waiting_time)
@@ -81,9 +87,9 @@ class SimulationMetrics:
                     self._parking_durations.append(event.timestamp - started_at)
             elif event.type == VEHICLE_FINISHED:
                 self._finished += 1
-                if (event.vehicle_id is not None
-                        and event.vehicle_id not in self._entered_vehicle_ids):
-                    self._cancelled += 1
+                self._currently_waiting.discard(event.vehicle_id)
+            elif event.type == VEHICLE_CANCELLED:
+                self._cancelled += 1
                 self._currently_waiting.discard(event.vehicle_id)
             elif event.type == SIMULATION_STARTED:
                 self._started_at = event.timestamp
@@ -148,10 +154,43 @@ class MetricsForwardingQueue:
     def __init__(self, destination: Queue, metrics: SimulationMetrics) -> None:
         self._destination = destination
         self._metrics = metrics
+        self._publish_lock = Lock()
+        self._audit = None
+        self._run_id: str | None = None
+
+    def set_audit_context(self, audit, run_id: str) -> None:
+        self._audit = audit
+        self._run_id = run_id
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        self._metrics.record_event(item)
-        self._destination.put(item, block=block, timeout=timeout)
+        # Direct Simulator events are generated and published on this caller.
+        self._put(item, block, timeout, _current_origin())
+
+    def put_with_origin(self, item: Any, origin: dict[str, Any],
+                        block: bool = True, timeout: float | None = None) -> None:
+        """Forward private core provenance without changing the event object."""
+        self._put(item, block, timeout, origin)
+
+    def _put(self, item: Any, block: bool, timeout: float | None,
+             origin: dict[str, Any] | None) -> None:
+        with self._publish_lock:
+            self._metrics.record_event(item)
+            put_with_origin = getattr(self._destination, "put_with_origin", None)
+            if origin is not None and callable(put_with_origin):
+                put_with_origin(item, origin, block=block, timeout=timeout)
+            else:
+                self._destination.put(item, block=block, timeout=timeout)
+            if self._audit is not None and self._run_id is not None:
+                audit_origin = ({"origin_process_id": origin["process_id"],
+                                 "origin_process_name": origin["process_name"],
+                                 "origin_thread_name": origin["thread_name"]}
+                                if origin is not None else None)
+                self._audit.event(item, self._run_id, origin=audit_origin)
+
+
+def _current_origin() -> dict[str, Any]:
+    return {"process_id": os.getpid(), "process_name": multiprocessing.current_process().name,
+            "thread_name": current_thread().name}
 
 
 def _average(values: list[float]) -> float:
