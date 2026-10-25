@@ -27,6 +27,137 @@ def payload():
     }
 
 
+@pytest.fixture
+def controlled_controller(monkeypatch):
+    """Exercise real controller handlers with deterministic transport ordering."""
+    from threading import Event
+
+    class Process:
+        exitcode = None
+        alive = True
+        joins = 0
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout):
+            self.joins += 1
+            self.alive, self.exitcode = False, 0
+
+    class Context:
+        def Queue(self, maxsize):
+            return Queue(maxsize=maxsize)
+
+        def Event(self):
+            return Event()
+
+        def Process(self, **kwargs):
+            return Process()
+
+    monkeypatch.setattr(mp, "get_context", lambda context: Context())
+    controller = MultiprocessController(capacity=1)
+    monkeypatch.setattr(controller, "_timeout", .1)
+    monkeypatch.setattr(controller, "_expected", {})
+    return controller
+
+
+def command_reply(command, run_id, request_id="req-1"):
+    return {"v": 1, "kind": "reply", "run_id": run_id, "command": command,
+            "request_id": request_id, "status": "accepted"}
+
+
+def pre_reply_messages():
+    from core.events import ParkingEvent
+
+    return [
+        parking_event_to_message(ParkingEvent("SIMULATION_STARTED", 1.0), "buffer-run", 0),
+        {"v": 1, "kind": "audit", "run_id": "buffer-run", "seq": 0,
+         "name": "REQUEST", "timestamp": 1.0, "payload": {"operation": "admission_attempt"}},
+        parking_event_to_message(ParkingEvent("VEHICLE_CREATED", 2.0, vehicle_id=1,
+                                 plate="ABC-1", authorized_space_id=0), "buffer-run", 1),
+        {"v": 1, "kind": "audit", "run_id": "buffer-run", "seq": 1,
+         "name": "REQUEST", "timestamp": 2.0, "payload": {"operation": "stop_requested"}},
+    ]
+
+
+@pytest.mark.parametrize("selection", [(0,), (1,), (0, 1, 2, 3)],
+                         ids=["event", "audit", "mixed"])
+def test_start_pre_reply_messages_have_one_public_delivery(controlled_controller, selection):
+    controller = controlled_controller
+    messages = pre_reply_messages()
+    expected = [messages[index] for index in selection]
+    for message in expected + [command_reply("START", "buffer-run")]:
+        controller._output.put(message)
+
+    assert controller.start(payload(), run_id="buffer-run") == "buffer-run"
+    delivered = [controller.get(block=False) for _ in expected]
+    assert delivered == expected
+    # Event and audit sequence counters are independent channels.
+    assert len({(m["kind"], m["run_id"], m["seq"]) for m in delivered}) == len(expected)
+    with pytest.raises(Empty):
+        controller.get(block=False)
+
+
+@pytest.mark.parametrize("command,run_id", [
+    ("START", "buffer-run"), ("STOP", "buffer-run"), ("SHUTDOWN", None),
+])
+def test_command_correlates_reply_without_rebuffering_messages(
+        controlled_controller, command, run_id):
+    controller = controlled_controller
+    messages = pre_reply_messages()
+    unrelated = command_reply("STOP", "other-run", "other-request")
+    matched = command_reply(command, run_id)
+    for message in messages + [unrelated, matched]:
+        controller._output.put(message)
+
+    assert controller._command(command, run_id, payload() if command == "START" else None) == matched
+    sent = controller._commands.get_nowait()
+    assert (sent["name"], sent["run_id"], sent["request_id"]) == (command, run_id, "req-1")
+    # Preserve observed buffer order, not a new global cross-process order.
+    expected = messages + [unrelated] + ([matched] if command == "SHUTDOWN" else [])
+    assert [controller.get(block=False) for _ in expected] == expected
+    with pytest.raises(Empty):
+        controller.get(block=False)
+
+
+@pytest.mark.parametrize("command,run_id,wrong_command,wrong_run", [
+    ("START", "buffer-run", "STOP", "buffer-run"),
+    ("START", "buffer-run", "START", "other-run"),
+    ("STOP", "buffer-run", "START", "buffer-run"),
+    ("STOP", "buffer-run", "STOP", "other-run"),
+    ("SHUTDOWN", None, "STOP", "other-run"),
+])
+@pytest.mark.parametrize("source", ["output", "pending"])
+def test_matching_request_id_does_not_accept_wrong_reply_scope(
+        controlled_controller, command, run_id, wrong_command, wrong_run, source):
+    controller = controlled_controller
+    wrong = command_reply(wrong_command, wrong_run)
+    if source == "output":
+        controller._output.put(wrong)
+    else:
+        controller._pending.append(wrong)
+    with pytest.raises(RuntimeError, match="reply correlation mismatch"):
+        controller._command(command, run_id, payload() if command == "START" else None)
+
+
+def test_stop_and_shutdown_preserve_pending_messages_and_join(controlled_controller):
+    controller = controlled_controller
+    expected = pre_reply_messages()
+    for message in expected + [command_reply("START", "buffer-run")]:
+        controller._output.put(message)
+    controller.start(payload(), run_id="buffer-run")
+    controller._output.put(command_reply("STOP", "buffer-run", "req-2"))
+    controller.stop("buffer-run")
+    shutdown_reply = command_reply("SHUTDOWN", None, "req-3")
+    controller._output.put(shutdown_reply)
+    controller.shutdown()
+
+    assert not controller.is_alive() and controller._process.joins == 1
+    assert [controller.get(block=False) for _ in range(len(expected) + 1)] == expected + [shutdown_reply]
+    assert controller._pending == []
+    assert [controller._commands.get_nowait()["name"] for _ in range(3)] == ["START", "STOP", "SHUTDOWN"]
+
+
 def _raise_from_child_producer(output_queue, producer_entered, test_payload):
     from simulation import config
     from core.parking import ParkingLot

@@ -36,7 +36,9 @@ def test_ipc_event_translates_once_and_updates_current_run_metrics():
     event = ParkingEvent("VEHICLE_CREATED", 10.0, vehicle_id=1, plate="EDU-001",
                          authorized_space_id=0)
     controller.messages.put(parking_event_to_message(event, "run-test", 0))
+    controller.messages.put(parking_event_to_message(event, "run-test", 0))
 
+    adapter._drain_one()
     adapter._drain_one()
 
     assert destination.get_nowait() == event

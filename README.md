@@ -25,6 +25,11 @@ mantienen en el [contrato de equipo](AGENTS.md). La UI actualiza la vista
 desde el hilo principal al consumir eventos; un snapshot, si se consulta,
 es únicamente una lectura segura del estado del parqueadero.
 
+Mientras espera una respuesta, el controlador conserva una sola entrega pública
+de cada mensaje recibido, en el orden observado. Las respuestas se correlacionan
+por solicitud, comando y ejecución; los eventos y registros de auditoría previos
+no se vuelven a encolar al comprobar esa respuesta.
+
 ## Política FIFO aprobada
 
 Se aplica FIFO entre solicitudes elegibles, con FIFO estricto por puesto
