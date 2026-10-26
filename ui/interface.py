@@ -69,8 +69,8 @@ class ParkingApp:
         # Initialize Main Window
         self.root = tk.Tk()
         self.root.title("Smart Parking Simulator — Monitor de Concurrencia")
-        self.root.geometry("1100x740")
-        self.root.minsize(900, 600)
+        self.root.geometry("1160x740")
+        self.root.minsize(980, 620)
         self.root.configure(bg=COLOR_BG_PRIMARY)
 
         # Build UI layout
@@ -92,9 +92,23 @@ class ParkingApp:
         )
         self.control_bar.pack(fill="x", padx=16, pady=(16, 10))
 
-        # 2. KPI Stat Cards Grid (2 rows so 7 cards never squish on narrow screens)
-        stats_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
-        stats_frame.pack(fill="x", padx=16, pady=(0, 10))
+        # 2. Status Bar (Footer) packed at bottom before center_frame expands
+        self._build_footer()
+
+        # 3. Main Dashboard Area (Grid Split: Left Workspace / Full-Height Right Event Log)
+        center_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
+        center_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        center_frame.grid_columnconfigure(0, weight=5, minsize=540)
+        center_frame.grid_columnconfigure(1, weight=4, minsize=380)
+        center_frame.grid_rowconfigure(0, weight=1)
+
+        # Left Column: KPI Cards + Parking Bay Grid + Waiting Queue + Telemetry Summary
+        left_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY)
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+
+        # KPI Stat Cards Grid (2 rows so 7 cards never squish on narrow screens)
+        stats_frame = tk.Frame(left_col, bg=COLOR_BG_PRIMARY)
+        stats_frame.pack(fill="x", pady=(0, 10))
 
         kpi_definitions = (
             ("generated", "Generados", COLOR_TEXT_PRIMARY, ""),
@@ -128,37 +142,25 @@ class ParkingApp:
         for col_idx in range(kpi_columns):
             stats_frame.grid_columnconfigure(col_idx, weight=1, uniform="kpi_col")
 
-        # 3. Main Center Area (Split Left / Right)
-        center_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
-        center_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
-
-        # Left Column: Parking Bay Grid + Waiting Queue Lane + Telemetry Summary
-        left_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY)
-        left_col.pack(side="left", fill="both", expand=True, padx=(0, 10))
-
-        # Visual Grid of Parking Slots
+        # Visual Grid of Parking Slots (expand=False keeps proportional height when maximized)
         self.parking_grid = ParkingLotGridWidget(left_col, columns=5)
-        self.parking_grid.pack(fill="both", expand=True, pady=(0, 10))
+        self.parking_grid.pack(fill="x", expand=False, pady=(0, 10))
         self.parking_grid.setup_slots(self.capacity)
 
         # Visual Waiting Queue Lane
         self.waiting_lane = WaitingQueueWidget(left_col)
-        self.waiting_lane.pack(fill="x")
+        self.waiting_lane.pack(fill="x", pady=(0, 10))
 
         # Extended Telemetry & Final Report Summary Panel
         self.metrics_summary = MetricsSummaryWidget(left_col, capacity=self.capacity)
-        self.metrics_summary.pack(fill="x", pady=(10, 0))
+        self.metrics_summary.pack(fill="x")
 
-        # Right Column: Live Event Log Terminal
-        right_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY, width=420)
-        right_col.pack(side="right", fill="both", expand=False)
-        right_col.pack_propagate(False)
+        # Right Column: Full-height Live Event Log Terminal with guaranteed width
+        right_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY)
+        right_col.grid(row=0, column=1, sticky="nsew")
 
         self.event_log = EventLogWidget(right_col)
         self.event_log.pack(fill="both", expand=True)
-
-        # 4. Status Bar (Footer)
-        self._build_footer()
 
     def _build_footer(self) -> None:
         """Construct the bottom status bar displaying OS concepts."""

@@ -599,9 +599,17 @@ def test_visual_stability_log_cap_scroll_queue_and_telemetry_summary() -> None:
         slot = app.parking_grid.slots[1]
         # V1: Slot border thickness and label char widths stay invariant across states
         assert int(slot.cget("highlightthickness")) == 2
-        assert int(slot._lbl_icon.cget("width")) == 6
-        assert int(slot._lbl_status.cget("width")) == 12
-        assert int(slot._lbl_detail.cget("width")) == 16
+        assert int(slot._lbl_icon.cget("width")) == 5
+        assert int(slot._lbl_status.cget("width")) == 10
+        assert int(slot._lbl_detail.cget("width")) == 13
+
+        # Layout proportions: EventLog gets generous width in normal mode and slots do not stretch tall on maximize
+        app.root.update_idletasks()
+        normal_slot_h = slot.winfo_height()
+        assert app.event_log.winfo_width() >= 380
+        app.root.geometry("1920x1080")
+        app.root.update_idletasks()
+        assert slot.winfo_height() == normal_slot_h
         slot.set_occupied(1, "EDU-001")
         assert int(slot.cget("highlightthickness")) == 2
         slot.set_available()

@@ -130,7 +130,7 @@ class ParkingSlotWidget(tk.Frame):
             bg=COLOR_BG_CARD,
             highlightbackground=COLOR_BORDER,
             highlightthickness=2,
-            padx=10,
+            padx=8,
             pady=10,
             **kwargs,
         )
@@ -152,31 +152,31 @@ class ParkingSlotWidget(tk.Frame):
         self._lbl_icon = tk.Label(
             self,
             text="P",
-            width=6,
+            width=5,
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_PRIMARY,
-            font=(font_family(self), 20, "bold"),
+            font=(font_family(self), 16, "bold"),
         )
         self._lbl_icon.pack(anchor="center", pady=(4, 2))
 
-        # Status Badge (DISPONIBLE / OCUPADO) with fixed width to avoid layout jitter
+        # Status Badge (DISPONIBLE / OCUPADO) with compact fixed width to avoid layout jitter
         self._lbl_status = tk.Label(
             self,
             text="DISPONIBLE",
-            width=12,
+            width=10,
             bg=COLOR_AVAILABLE_BG,
             fg=COLOR_AVAILABLE,
-            font=(font_family(self), 9, "bold"),
-            padx=6,
+            font=(font_family(self), 8, "bold"),
+            padx=4,
             pady=2,
         )
         self._lbl_status.pack(anchor="center", pady=(4, 0))
 
-        # Vehicle Details with fixed width so long plates do not stretch the grid column
+        # Vehicle Details with compact fixed width so 5 columns fit alongside the Event Log
         self._lbl_detail = tk.Label(
             self,
             text="Libre",
-            width=16,
+            width=13,
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
             font=(font_family(self), 8),
@@ -239,13 +239,14 @@ class ParkingLotGridWidget(tk.Frame):
             row = (index - 1) // self.columns
             col = (index - 1) % self.columns
             slot_widget = ParkingSlotWidget(self, space_id=index)
-            slot_widget.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+            slot_widget.grid(row=row, column=col, padx=5, pady=5, sticky="ew")
             self.slots[index] = slot_widget
 
         for col_idx in range(self.columns):
             self.grid_columnconfigure(col_idx, weight=1, uniform="slot_col")
         for row_idx in range(total_rows):
-            self.grid_rowconfigure(row_idx, weight=1, uniform="slot_row")
+            # Keep natural card height so slots do not stretch into tall empty towers on maximize
+            self.grid_rowconfigure(row_idx, weight=0)
 
     def occupy_slot(self, slot_key: int, vehicle_id: int, plate: str | None = None) -> None:
         """Mark a projected, 1-based display slot as occupied."""
