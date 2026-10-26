@@ -34,6 +34,8 @@ class ParkingProjection:
 
     def reset(self) -> None:
         self.occupied: dict[int, int] = {}
+        # Plates of currently parked vehicles, keyed by vehicle ID.
+        self.plates: dict[int, str] = {}
         self.waiting: set[int] = set()
         self._finished: set[int] = set()
 
@@ -60,6 +62,8 @@ class ParkingProjection:
                 slot = core_space_to_slot(event.space_id, self.capacity)
                 if event.vehicle_id is not None:
                     self.occupied[slot] = event.vehicle_id
+                    if event.plate:
+                        self.plates[event.vehicle_id] = event.plate
             else:
                 slot = None
             if event.vehicle_id is not None:
@@ -68,6 +72,8 @@ class ParkingProjection:
         elif event.type == "VEHICLE_EXITED" and event.space_id is not None:
             slot = core_space_to_slot(event.space_id, self.capacity)
             self.occupied.pop(slot, None)
+            if event.vehicle_id is not None:
+                self.plates.pop(event.vehicle_id, None)
             return slot
         elif event.type == "VEHICLE_FINISHED" and event.vehicle_id is not None:
             self.waiting.discard(event.vehicle_id)
@@ -81,3 +87,12 @@ class ParkingProjection:
         if snapshot.capacity != self.capacity:
             raise ValueError("Snapshot capacity differs from displayed capacity")
         self.occupied = project_occupied_spaces(snapshot.occupied_spaces, self.capacity)
+        # Prefer plates reported by the snapshot; keep known plates otherwise.
+        snapshot_plates = {request.vehicle_id: request.plate
+                           for request in snapshot.active_requests
+                           if request.state == "PARKED" and request.plate}
+        self.plates = {
+            vehicle_id: snapshot_plates.get(vehicle_id, self.plates.get(vehicle_id))
+            for vehicle_id in self.occupied.values()
+            if vehicle_id in snapshot_plates or vehicle_id in self.plates
+        }

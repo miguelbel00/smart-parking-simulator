@@ -241,13 +241,18 @@ class ParkingLotGridWidget(tk.Frame):
         """Translate raw core snapshot pairs once, then render display slots."""
         self.render_occupied(project_occupied_spaces(occupied_spaces, len(self.slots)))
 
-    def render_occupied(self, occupied: dict[int, int]) -> None:
-        """Render already-projected keys, clearing slots absent from the mapping."""
+    def render_occupied(self, occupied: dict[int, int],
+                        plates: dict[int, str] | None = None) -> None:
+        """Render already-projected keys, clearing slots absent from the mapping.
+
+        `plates` maps vehicle IDs to plates so reconciliation keeps them visible.
+        """
         if any(key not in self.slots for key in occupied):
             raise ValueError("Projected slot is not present in the grid")
+        plates = plates or {}
         for key, slot in self.slots.items():
             if key in occupied:
-                slot.set_occupied(occupied[key])
+                slot.set_occupied(occupied[key], plates.get(occupied[key]))
             else:
                 slot.set_available()
 

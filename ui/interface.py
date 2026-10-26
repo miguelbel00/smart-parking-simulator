@@ -328,7 +328,7 @@ class ParkingApp:
     def _reconcile_snapshot(self, snapshot: ParkingSnapshot) -> None:
         """Refresh displayed occupancy from a safe core snapshot when supplied."""
         self.projection.reconcile_snapshot(snapshot)
-        self.parking_grid.render_occupied(self.projection.occupied)
+        self.parking_grid.render_occupied(self.projection.occupied, self.projection.plates)
         self._update_display_counters()
 
     def _start_simulation(self) -> None:

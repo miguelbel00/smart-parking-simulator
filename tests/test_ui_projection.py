@@ -516,6 +516,21 @@ def test_app_snapshot_reconciliation_updates_grid_and_cards_without_guessing_wai
     assert app.waiting_lane.ids == {10}
 
 
+def test_snapshot_reconciliation_keeps_known_and_snapshot_plates() -> None:
+    from core.parking import ActiveRequestSnapshot
+
+    app = make_app()
+    app._dispatch_event(event("VEHICLE_ENTERED", 7, 0, plate="KNOWN-7"))
+    snapshot = ParkingSnapshot(5, 2, 0, ((0, 7), (3, 8)),
+                               (ActiveRequestSnapshot(8, "SNAP-8", 3, "PARKED", 3),))
+    app._reconcile_snapshot(snapshot)
+    assert app.parking_grid.slots[1].plate == "KNOWN-7"
+    assert app.parking_grid.slots[4].plate == "SNAP-8"
+    assert app.projection.plates == {7: "KNOWN-7", 8: "SNAP-8"}
+    app._dispatch_event(event("VEHICLE_EXITED", 7, 0, plate="KNOWN-7"))
+    assert app.projection.plates == {8: "SNAP-8"}
+
+
 def test_app_invalid_event_space_fails_before_widget_changes() -> None:
     app = make_app()
     with pytest.raises(ValueError):
