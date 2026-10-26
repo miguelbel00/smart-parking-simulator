@@ -11,11 +11,32 @@ This module provides graphical components built with Tkinter for:
 
 from __future__ import annotations
 
+from pathlib import Path
 import tkinter as tk
 from typing import Callable, Iterable
 
 from ui.fonts import font_family
 from ui.projection import project_occupied_spaces
+
+
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+PARKING_SPACE_ICON_PATH = ASSETS_DIR / "parking_space_icon.png"
+CAR_OCCUPIED_ICON_PATH = ASSETS_DIR / "car_occupied_icon.png"
+
+
+def _load_png_icon(
+    master: tk.Misc, path: Path, subsample: int = 2
+) -> tk.PhotoImage | None:
+    """Load a PNG asset natively with Tk PhotoImage and downscale by `subsample`."""
+    if not path.is_file():
+        return None
+    try:
+        img = tk.PhotoImage(master=master, file=str(path))
+        if subsample > 1:
+            img = img.subsample(subsample, subsample)
+        return img
+    except tk.TclError:
+        return None
 
 
 # --- Color Palette (Dark Slate Theme) ---
@@ -137,6 +158,11 @@ class ParkingSlotWidget(tk.Frame):
         self.space_id = space_id
         self.occupied_by: int | None = None
         self.plate: str | None = None
+        self._img_available = _load_png_icon(self, PARKING_SPACE_ICON_PATH, subsample=2)
+        self._img_occupied = _load_png_icon(self, CAR_OCCUPIED_ICON_PATH, subsample=2)
+        self._has_icons = (
+            self._img_available is not None and self._img_occupied is not None
+        )
 
         # Space Identifier (e.g., Espacio #1)
         self._lbl_id = tk.Label(
@@ -148,15 +174,24 @@ class ParkingSlotWidget(tk.Frame):
         )
         self._lbl_id.pack(anchor="center")
 
-        # Fixed character width prevents slot resizing when switching "P" <-> "AUTO".
-        self._lbl_icon = tk.Label(
-            self,
-            text="P",
-            width=5,
-            bg=COLOR_BG_CARD,
-            fg=COLOR_TEXT_PRIMARY,
-            font=(font_family(self), 16, "bold"),
-        )
+        # Slot Icon: uses 48x48 PNG assets when present, falling back to fixed-width ASCII.
+        if self._has_icons:
+            self._lbl_icon = tk.Label(
+                self,
+                image=self._img_available,
+                text="",
+                bg=COLOR_BG_CARD,
+                fg=COLOR_TEXT_PRIMARY,
+            )
+        else:
+            self._lbl_icon = tk.Label(
+                self,
+                text="P",
+                width=5,
+                bg=COLOR_BG_CARD,
+                fg=COLOR_TEXT_PRIMARY,
+                font=(font_family(self), 16, "bold"),
+            )
         self._lbl_icon.pack(anchor="center", pady=(4, 2))
 
         # Status Badge (DISPONIBLE / OCUPADO) with compact fixed width to avoid layout jitter
@@ -188,7 +223,10 @@ class ParkingSlotWidget(tk.Frame):
         self.occupied_by = vehicle_id
         self.plate = plate
         self.config(highlightbackground=COLOR_OCCUPIED, highlightthickness=2)
-        self._lbl_icon.config(text="AUTO")
+        if self._has_icons:
+            self._lbl_icon.config(image=self._img_occupied, text="")
+        else:
+            self._lbl_icon.config(text="AUTO")
         self._lbl_status.config(
             text="OCUPADO",
             bg=COLOR_OCCUPIED_BG,
@@ -204,7 +242,10 @@ class ParkingSlotWidget(tk.Frame):
         self.occupied_by = None
         self.plate = None
         self.config(highlightbackground=COLOR_BORDER, highlightthickness=2)
-        self._lbl_icon.config(text="P")
+        if self._has_icons:
+            self._lbl_icon.config(image=self._img_available, text="")
+        else:
+            self._lbl_icon.config(text="P")
         self._lbl_status.config(
             text="DISPONIBLE",
             bg=COLOR_AVAILABLE_BG,
@@ -301,6 +342,7 @@ class WaitingQueueWidget(tk.Frame):
         )
         self._vehicles: list[int] = []
         self._plates: dict[int, str] = {}
+        self._img_car = _load_png_icon(self, CAR_OCCUPIED_ICON_PATH, subsample=4)
 
         # Top Bar Header
         top_bar = tk.Frame(self, bg=COLOR_BG_CARD)
@@ -419,7 +461,7 @@ class WaitingQueueWidget(tk.Frame):
             self._on_items_configure()
             return
 
-        # Render each waiting vehicle horizontally with ASCII markers
+        # Render each waiting vehicle horizontally with car icon or ASCII marker
         for idx, vid in enumerate(self._vehicles):
             item = tk.Frame(
                 self._items_container,
@@ -431,13 +473,25 @@ class WaitingQueueWidget(tk.Frame):
             )
             item.pack(side="left", padx=(0, 6))
 
-            tk.Label(
-                item,
-                text=f"AUTO {self._plates.get(vid, f'Auto #{vid}')} (#{vid})",
-                bg=COLOR_WAITING_BG,
-                fg=COLOR_TEXT_PRIMARY,
-                font=(font_family(self), 9, "bold"),
-            ).pack(side="left")
+            badge_label = f"{self._plates.get(vid, f'Auto #{vid}')} (#{vid})"
+            if self._img_car is not None:
+                tk.Label(
+                    item,
+                    image=self._img_car,
+                    text=f" {badge_label}",
+                    compound="left",
+                    bg=COLOR_WAITING_BG,
+                    fg=COLOR_TEXT_PRIMARY,
+                    font=(font_family(self), 9, "bold"),
+                ).pack(side="left")
+            else:
+                tk.Label(
+                    item,
+                    text=f"AUTO {badge_label}",
+                    bg=COLOR_WAITING_BG,
+                    fg=COLOR_TEXT_PRIMARY,
+                    font=(font_family(self), 9, "bold"),
+                ).pack(side="left")
 
             if idx < len(self._vehicles) - 1:
                 tk.Label(

@@ -597,23 +597,29 @@ def test_visual_stability_log_cap_scroll_queue_and_telemetry_summary() -> None:
     app = ParkingApp(event_queue=Queue(), capacity=5)
     try:
         slot = app.parking_grid.slots[1]
-        # V1: Slot border thickness and label char widths stay invariant across states
+        # V1: Slot border thickness, PNG icon dimensions, and label widths stay invariant across states
         assert int(slot.cget("highlightthickness")) == 2
-        assert int(slot._lbl_icon.cget("width")) == 5
+        assert slot._has_icons is True
+        assert (slot._img_available.width(), slot._img_available.height()) == (48, 48)
+        assert (slot._img_occupied.width(), slot._img_occupied.height()) == (48, 48)
         assert int(slot._lbl_status.cget("width")) == 10
         assert int(slot._lbl_detail.cget("width")) == 13
 
         # Layout proportions: EventLog gets generous width in normal mode and slots do not stretch tall on maximize
         app.root.update_idletasks()
-        normal_slot_h = slot.winfo_height()
+        normal_slot_w, normal_slot_h = slot.winfo_width(), slot.winfo_height()
         assert app.event_log.winfo_width() >= 380
+        slot.set_occupied(1, "EDU-001")
+        app.root.update_idletasks()
+        assert (slot.winfo_width(), slot.winfo_height()) == (normal_slot_w, normal_slot_h)
+        assert str(slot._lbl_icon.cget("image")) == str(slot._img_occupied)
+        slot.set_available()
+        app.root.update_idletasks()
+        assert (slot.winfo_width(), slot.winfo_height()) == (normal_slot_w, normal_slot_h)
+        assert str(slot._lbl_icon.cget("image")) == str(slot._img_available)
         app.root.geometry("1920x1080")
         app.root.update_idletasks()
         assert slot.winfo_height() == normal_slot_h
-        slot.set_occupied(1, "EDU-001")
-        assert int(slot.cget("highlightthickness")) == 2
-        slot.set_available()
-        assert int(slot.cget("highlightthickness")) == 2
 
         # V2: WaitingQueueWidget uses scrollable canvas and supports many vehicles
         for vid in range(1, 15):
