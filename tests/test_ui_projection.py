@@ -379,6 +379,16 @@ def test_wait_entry_exit_and_terminal_cards_keep_plate_and_project_physical_spac
     assert app.card_cancelled.value == 1
 
 
+def test_entry_log_reports_core_waiting_time_and_waiting_log_does_not():
+    app = make_app()
+    app._dispatch_event(event("VEHICLE_WAITING", 4, plate="W-4", authorized_space_id=0))
+    assert "en espera" in app.logs[-1][1] and "espera inicial" not in app.logs[-1][1]
+    app._dispatch_event(event("VEHICLE_ENTERED", 4, 0, plate="W-4", waiting_time=2.5))
+    assert "tras esperar 2.50s" in app.logs[-1][1]
+    app._dispatch_event(event("VEHICLE_ENTERED", 5, 1, plate="W-5"))
+    assert "tras esperar" not in app.logs[-1][1]
+
+
 def test_lifecycle_start_clears_visual_residues_and_loads_fresh_run_metrics():
     app = make_app()
     app._dispatch_event(event("VEHICLE_ENTERED", 1, 0, plate="OLD"))

@@ -261,10 +261,10 @@ class ParkingApp:
                 self.waiting_lane.add_vehicle(vehicle_id, plate)
             self._update_display_counters()
 
-            wait_info = f" (espera inicial: {waiting_time:.2f}s)" if waiting_time is not None else ""
+            # Core reports waiting_time on VEHICLE_ENTERED, not while waiting.
             destination = (f" para Espacio autorizado #{authorized_space_id + 1}"
                            if authorized_space_id is not None else "")
-            msg = f"{plate} (#{vehicle_id}) en espera{destination}{wait_info}."
+            msg = f"{plate} (#{vehicle_id}) en espera{destination}."
             self.event_log.log(event_type, msg, time_str)
 
         # 5. OS Concept: Request acquired a slot (state: PARKED)
@@ -275,7 +275,8 @@ class ParkingApp:
                 self.parking_grid.occupy_slot(slot_key, vehicle_id, vehicle_plate)
             self._update_display_counters()
 
-            msg = f"{plate} (#{vehicle_id}) ingresó al Espacio #{slot_key}."
+            wait_info = f" tras esperar {waiting_time:.2f}s" if waiting_time is not None else ""
+            msg = f"{plate} (#{vehicle_id}) ingresó al Espacio #{slot_key}{wait_info}."
             self.event_log.log(event_type, msg, time_str)
 
         # 6. OS Concept: Request released its slot resource
