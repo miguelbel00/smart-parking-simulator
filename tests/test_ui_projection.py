@@ -562,6 +562,15 @@ def test_real_queue_consumer_projects_start_enter_exit_in_order() -> None:
     assert app.card_occupied.value == 0
 
 
+def test_event_log_tag_map_covers_rejected_cancelled_and_error_events() -> None:
+    from ui.widgets import EventLogWidget
+
+    assert EventLogWidget.TAG_MAP["VEHICLE_REJECTED"] == "REJECTED"
+    assert EventLogWidget.TAG_MAP["VEHICLE_CANCELLED"] == "CANCELLED"
+    assert EventLogWidget.TAG_MAP["ENGINE_ERROR"] == "ERROR"
+    assert EventLogWidget.TAG_MAP["START_REFUSED"] == "WAITING"
+
+
 def test_parking_app_builds_kpi_cards_with_real_tk() -> None:
     app = ParkingApp(event_queue=Queue())
     try:

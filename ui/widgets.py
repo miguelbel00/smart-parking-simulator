@@ -467,25 +467,36 @@ class EventLogWidget(tk.Frame):
         self._text.tag_config("ENTERED", foreground=COLOR_AVAILABLE)
         self._text.tag_config("EXITED", foreground="#c084fc")
         self._text.tag_config("FINISHED", foreground=COLOR_INFO)
+        self._text.tag_config("REJECTED", foreground=COLOR_OCCUPIED)
+        self._text.tag_config("CANCELLED", foreground="#fb923c")
+        self._text.tag_config(
+            "ERROR", foreground=COLOR_OCCUPIED, font=(font_family(self, fixed=True), 9, "bold")
+        )
         self._text.tag_config(
             "SYSTEM", foreground="#38bdf8", font=(font_family(self, fixed=True), 9, "bold")
         )
         self._text.tag_config("MSG", foreground=COLOR_TEXT_PRIMARY)
 
+    # Event type -> color tag; unknown types fall back to plain "MSG".
+    TAG_MAP = {
+        "VEHICLE_CREATED": "CREATED",
+        "VEHICLE_WAITING": "WAITING",
+        "VEHICLE_ENTERED": "ENTERED",
+        "VEHICLE_EXITED": "EXITED",
+        "VEHICLE_FINISHED": "FINISHED",
+        "VEHICLE_REJECTED": "REJECTED",
+        "VEHICLE_CANCELLED": "CANCELLED",
+        "SIMULATION_STARTED": "SYSTEM",
+        "SIMULATION_FINISHED": "SYSTEM",
+        "ENGINE_ERROR": "ERROR",
+        "START_REFUSED": "WAITING",
+    }
+
     def log(self, event_type: str, message: str, timestamp_str: str) -> None:
         """Append an event line with specialized color tagging."""
         self._text.config(state="normal")
 
-        tag_map = {
-            "VEHICLE_CREATED": "CREATED",
-            "VEHICLE_WAITING": "WAITING",
-            "VEHICLE_ENTERED": "ENTERED",
-            "VEHICLE_EXITED": "EXITED",
-            "VEHICLE_FINISHED": "FINISHED",
-            "SIMULATION_STARTED": "SYSTEM",
-            "SIMULATION_FINISHED": "SYSTEM",
-        }
-        type_tag = tag_map.get(event_type, "MSG")
+        type_tag = self.TAG_MAP.get(event_type, "MSG")
 
         self._text.insert("end", f"[{timestamp_str}] ", "TIME")
         self._text.insert("end", f"[{event_type}] ", type_tag)
