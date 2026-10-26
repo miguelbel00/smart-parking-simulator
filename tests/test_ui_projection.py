@@ -339,6 +339,13 @@ def test_rejections_show_plate_reason_refresh_metrics_and_do_not_create_active_s
     assert "#1" in app.logs[0][1] and "#2" in app.logs[1][1]
 
 
+def test_created_event_alone_refreshes_generated_and_accepted_cards():
+    app = make_app()
+    app.simulator.metrics = Metrics(total_generated=1, total_admitted=1)
+    app._dispatch_event(event("VEHICLE_CREATED", 1, plate="EDU-001", authorized_space_id=0))
+    assert (app.card_generated.value, app.card_accepted.value) == (1, 1)
+
+
 def test_cancellation_removes_only_matching_identity_and_counts_cancellation_only():
     app = make_app()
     for identity in (11, 12):

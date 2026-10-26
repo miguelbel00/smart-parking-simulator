@@ -250,6 +250,8 @@ class ParkingApp:
 
         # 3. OS Concept: Vehicle request created (state: CREATED)
         elif event_type == "VEHICLE_CREATED":
+            # Generated/accepted cards must not depend on a later event.
+            self._update_display_counters()
             msg = f"Solicitud #{vehicle_id} creada: {plate}."
             self.event_log.log(event_type, msg, time_str)
 
