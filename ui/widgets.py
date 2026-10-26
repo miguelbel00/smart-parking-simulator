@@ -51,6 +51,7 @@ class StatCard(tk.Frame):
         initial_value: str = "0",
         subtitle: str = "",
         value_color: str = COLOR_TEXT_PRIMARY,
+        compact: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(
@@ -58,11 +59,13 @@ class StatCard(tk.Frame):
             bg=COLOR_BG_CARD,
             highlightbackground=COLOR_BORDER,
             highlightthickness=1,
-            padx=16,
-            pady=12,
+            padx=10 if not compact else 8,
+            pady=8 if not compact else 6,
             **kwargs,
         )
         self.value_color = value_color
+        self.value: str = str(initial_value)
+        self.subtitle: str = subtitle
 
         # Card Title
         self._lbl_title = tk.Label(
@@ -70,18 +73,19 @@ class StatCard(tk.Frame):
             text=title.upper(),
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
-            font=(font_family(self), 9, "bold"),
+            font=(font_family(self), 8, "bold"),
             anchor="w",
         )
         self._lbl_title.pack(fill="x")
 
         # Large Metric Value
+        value_font_size = 14 if compact else 18
         self._lbl_value = tk.Label(
             self,
             text=initial_value,
             bg=COLOR_BG_CARD,
             fg=self.value_color,
-            font=(font_family(self), 22, "bold"),
+            font=(font_family(self), value_font_size, "bold"),
             anchor="w",
         )
         self._lbl_value.pack(fill="x", pady=(2, 0))
@@ -100,9 +104,17 @@ class StatCard(tk.Frame):
 
     def update_value(self, value: str | int, subtitle: str | None = None) -> None:
         """Update the displayed value and optional subtitle."""
-        self._lbl_value.config(text=str(value))
+        self.value = str(value)
+        self._lbl_value.config(text=self.value)
         if subtitle is not None:
-            self._lbl_subtitle.config(text=subtitle)
+            self.update_subtitle(subtitle)
+
+    def update_subtitle(self, subtitle: str) -> None:
+        """Update and ensure visibility of the descriptive subtitle."""
+        self.subtitle = subtitle
+        self._lbl_subtitle.config(text=subtitle)
+        if subtitle and not self._lbl_subtitle.winfo_ismapped():
+            self._lbl_subtitle.pack(fill="x")
 
 
 class ParkingSlotWidget(tk.Frame):
@@ -117,7 +129,7 @@ class ParkingSlotWidget(tk.Frame):
             parent,
             bg=COLOR_BG_CARD,
             highlightbackground=COLOR_BORDER,
-            highlightthickness=1,
+            highlightthickness=2,
             padx=10,
             pady=10,
             **kwargs,
@@ -136,32 +148,35 @@ class ParkingSlotWidget(tk.Frame):
         )
         self._lbl_id.pack(anchor="center")
 
-        # ASCII marker avoids platform-dependent emoji rendering.
+        # Fixed character width prevents slot resizing when switching "P" <-> "AUTO".
         self._lbl_icon = tk.Label(
             self,
             text="P",
+            width=6,
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_PRIMARY,
-            font=(font_family(self), 24),
+            font=(font_family(self), 20, "bold"),
         )
         self._lbl_icon.pack(anchor="center", pady=(4, 2))
 
-        # Status Badge (DISPONIBLE / OCUPADO)
+        # Status Badge (DISPONIBLE / OCUPADO) with fixed width to avoid layout jitter
         self._lbl_status = tk.Label(
             self,
             text="DISPONIBLE",
+            width=12,
             bg=COLOR_AVAILABLE_BG,
             fg=COLOR_AVAILABLE,
             font=(font_family(self), 9, "bold"),
-            padx=8,
+            padx=6,
             pady=2,
         )
         self._lbl_status.pack(anchor="center", pady=(4, 0))
 
-        # Vehicle Details
+        # Vehicle Details with fixed width so long plates do not stretch the grid column
         self._lbl_detail = tk.Label(
             self,
             text="Libre",
+            width=16,
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_MUTED,
             font=(font_family(self), 8),
@@ -188,7 +203,7 @@ class ParkingSlotWidget(tk.Frame):
         """Mark slot as free when the vehicle leaves."""
         self.occupied_by = None
         self.plate = None
-        self.config(highlightbackground=COLOR_BORDER, highlightthickness=1)
+        self.config(highlightbackground=COLOR_BORDER, highlightthickness=2)
         self._lbl_icon.config(text="P")
         self._lbl_status.config(
             text="DISPONIBLE",
@@ -219,6 +234,7 @@ class ParkingLotGridWidget(tk.Frame):
             slot.destroy()
         self.slots.clear()
 
+        total_rows = max(1, (capacity + self.columns - 1) // self.columns)
         for index in range(1, capacity + 1):
             row = (index - 1) // self.columns
             col = (index - 1) % self.columns
@@ -227,7 +243,9 @@ class ParkingLotGridWidget(tk.Frame):
             self.slots[index] = slot_widget
 
         for col_idx in range(self.columns):
-            self.grid_columnconfigure(col_idx, weight=1)
+            self.grid_columnconfigure(col_idx, weight=1, uniform="slot_col")
+        for row_idx in range(total_rows):
+            self.grid_rowconfigure(row_idx, weight=1, uniform="slot_row")
 
     def occupy_slot(self, slot_key: int, vehicle_id: int, plate: str | None = None) -> None:
         """Mark a projected, 1-based display slot as occupied."""
@@ -267,6 +285,7 @@ class WaitingQueueWidget(tk.Frame):
 
     In OS terms, this visualizes requests in the WAITING / BLOCKED state. A
     request may wait for capacity or for its authorized space to become free.
+    Uses a horizontally scrollable Canvas so many waiting vehicles never clip.
     """
 
     def __init__(self, parent: tk.Widget, **kwargs) -> None:
@@ -307,9 +326,31 @@ class WaitingQueueWidget(tk.Frame):
         )
         self._lbl_count.pack(side="right")
 
-        # Container for vehicle items in the waiting lane
-        self._items_container = tk.Frame(self, bg=COLOR_BG_CARD)
-        self._items_container.pack(fill="x", pady=(8, 0))
+        # Horizontally scrollable viewport for waiting badges
+        viewport = tk.Frame(self, bg=COLOR_BG_CARD)
+        viewport.pack(fill="x", pady=(8, 0))
+
+        self._canvas = tk.Canvas(
+            viewport,
+            bg=COLOR_BG_CARD,
+            height=38,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._scrollbar = tk.Scrollbar(
+            viewport,
+            orient="horizontal",
+            command=self._canvas.xview,
+        )
+        self._canvas.configure(xscrollcommand=self._scrollbar.set)
+        self._canvas.pack(side="top", fill="x", expand=True)
+
+        # Inner container for vehicle items inside the canvas
+        self._items_container = tk.Frame(self._canvas, bg=COLOR_BG_CARD)
+        self._canvas_window = self._canvas.create_window(
+            (0, 0), window=self._items_container, anchor="nw"
+        )
+        self._items_container.bind("<Configure>", self._on_items_configure)
 
         self._lbl_empty = tk.Label(
             self._items_container,
@@ -320,6 +361,19 @@ class WaitingQueueWidget(tk.Frame):
         )
         self._lbl_empty.pack(anchor="w", pady=4)
 
+    def _on_items_configure(self, _event: tk.Event | None = None) -> None:
+        """Update canvas scrollregion and toggle scrollbar visibility."""
+        bbox = self._canvas.bbox("all")
+        if bbox is not None:
+            self._canvas.configure(scrollregion=bbox)
+            content_width = bbox[2] - bbox[0]
+            canvas_width = max(self._canvas.winfo_width(), 1)
+            if content_width > canvas_width and len(self._vehicles) > 1:
+                if not self._scrollbar.winfo_ismapped():
+                    self._scrollbar.pack(side="bottom", fill="x", pady=(4, 0))
+            elif self._scrollbar.winfo_ismapped():
+                self._scrollbar.pack_forget()
+
     def add_vehicle(self, vehicle_id: int, plate: str | None = None) -> None:
         """Add request identity and plate to the waiting lane."""
         if vehicle_id not in self._vehicles:
@@ -328,6 +382,7 @@ class WaitingQueueWidget(tk.Frame):
             self._refresh()
         elif plate:
             self._plates[vehicle_id] = plate
+            self._refresh()
 
     def remove_vehicle(self, vehicle_id: int) -> None:
         """Remove request identity once it leaves the waiting state."""
@@ -359,9 +414,11 @@ class WaitingQueueWidget(tk.Frame):
                 font=(font_family(self), 9, "italic"),
             )
             self._lbl_empty.pack(anchor="w", pady=4)
+            self._canvas.xview_moveto(0.0)
+            self._on_items_configure()
             return
 
-        # Render each waiting vehicle horizontally with arrows
+        # Render each waiting vehicle horizontally with ASCII markers
         for idx, vid in enumerate(self._vehicles):
             item = tk.Frame(
                 self._items_container,
@@ -375,7 +432,7 @@ class WaitingQueueWidget(tk.Frame):
 
             tk.Label(
                 item,
-                text=f"🚗 {self._plates.get(vid, f'Auto #{vid}')} (#{vid})",
+                text=f"AUTO {self._plates.get(vid, f'Auto #{vid}')} (#{vid})",
                 bg=COLOR_WAITING_BG,
                 fg=COLOR_TEXT_PRIMARY,
                 font=(font_family(self), 9, "bold"),
@@ -384,11 +441,14 @@ class WaitingQueueWidget(tk.Frame):
             if idx < len(self._vehicles) - 1:
                 tk.Label(
                     self._items_container,
-                    text="←",
+                    text="<-",
                     bg=COLOR_BG_CARD,
                     fg=COLOR_WAITING,
-                    font=(font_family(self), 11, "bold"),
+                    font=(font_family(self), 10, "bold"),
                 ).pack(side="left", padx=(0, 6))
+
+        self._items_container.update_idletasks()
+        self._on_items_configure()
 
 
 class EventLogWidget(tk.Frame):
@@ -396,9 +456,12 @@ class EventLogWidget(tk.Frame):
 
     In OS terms, this widget displays the event stream consumed from
     the thread-safe queue.Queue (Producer-Consumer pattern).
+    Caps stored lines to `max_lines` so the log never grows without bound.
     """
 
-    def __init__(self, parent: tk.Widget, **kwargs) -> None:
+    DEFAULT_MAX_LINES = 500
+
+    def __init__(self, parent: tk.Widget, max_lines: int = DEFAULT_MAX_LINES, **kwargs) -> None:
         super().__init__(
             parent,
             bg=COLOR_BG_CARD,
@@ -408,6 +471,10 @@ class EventLogWidget(tk.Frame):
             pady=10,
             **kwargs,
         )
+        if max_lines < 1:
+            raise ValueError("max_lines must be positive")
+        self.max_lines = max_lines
+        self.line_count = 0
 
         # Header with title and clear button
         header = tk.Frame(self, bg=COLOR_BG_CARD)
@@ -493,7 +560,7 @@ class EventLogWidget(tk.Frame):
     }
 
     def log(self, event_type: str, message: str, timestamp_str: str) -> None:
-        """Append an event line with specialized color tagging."""
+        """Append an event line with specialized color tagging and enforce max_lines."""
         self._text.config(state="normal")
 
         type_tag = self.TAG_MAP.get(event_type, "MSG")
@@ -501,6 +568,12 @@ class EventLogWidget(tk.Frame):
         self._text.insert("end", f"[{timestamp_str}] ", "TIME")
         self._text.insert("end", f"[{event_type}] ", type_tag)
         self._text.insert("end", f"{message}\n", "MSG")
+        self.line_count += 1
+
+        if self.line_count > self.max_lines:
+            excess = self.line_count - self.max_lines
+            self._text.delete("1.0", f"{excess + 1}.0")
+            self.line_count = self.max_lines
 
         self._text.see("end")
         self._text.config(state="disabled")
@@ -509,11 +582,224 @@ class EventLogWidget(tk.Frame):
         """Clear all lines from the log."""
         self._text.config(state="normal")
         self._text.delete("1.0", "end")
+        self.line_count = 0
         self._text.config(state="disabled")
+
+
+class MetricsSummaryWidget(tk.Frame):
+    """Secondary dashboard panel displaying extended simulation & OS metrics.
+
+    Surfaces metrics computed by `SimulationMetrics.snapshot()` that are not
+    part of the 7 primary request-counter cards:
+    - Average waiting time (`average_waiting_time`)
+    - Average parking duration (`average_parking_time`)
+    - Peak waiting queue length (`peak_waiting`)
+    - Peak slot occupancy (`peak_occupancy`)
+    - Total simulation duration (`total_duration`)
+    Also provides an on-demand / end-of-run summary dialog with the full report.
+    """
+
+    def __init__(self, parent: tk.Widget, capacity: int = 5, **kwargs) -> None:
+        super().__init__(
+            parent,
+            bg=COLOR_BG_CARD,
+            highlightbackground=COLOR_BORDER,
+            highlightthickness=1,
+            padx=14,
+            pady=8,
+            **kwargs,
+        )
+        self.capacity = capacity
+        self._last_report: str = ""
+        self._summary_window: tk.Toplevel | None = None
+
+        header = tk.Frame(self, bg=COLOR_BG_CARD)
+        header.pack(fill="x", pady=(0, 6))
+
+        tk.Label(
+            header,
+            text="TELEMETRÍA DE DESEMPEÑO Y ESTADÍSTICAS DE EJECUCIÓN",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_INFO,
+            font=(font_family(self), 9, "bold"),
+            anchor="w",
+        ).pack(side="left")
+
+        self._btn_report = tk.Button(
+            header,
+            text="Ver Resumen Final",
+            bg=COLOR_INFO_BG,
+            fg=COLOR_INFO,
+            activebackground=COLOR_INFO,
+            activeforeground=COLOR_BG_PRIMARY,
+            font=(font_family(self), 8, "bold"),
+            relief="flat",
+            padx=10,
+            pady=2,
+            cursor="hand2",
+            state="disabled",
+            command=self.show_report_dialog,
+        )
+        self._btn_report.pack(side="right")
+
+        self._lbl_banner = tk.Label(
+            header,
+            text="Sin resumen final aún",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_TEXT_MUTED,
+            font=(font_family(self), 8, "italic"),
+            padx=8,
+        )
+        self._lbl_banner.pack(side="right")
+
+        metrics_row = tk.Frame(self, bg=COLOR_BG_CARD)
+        metrics_row.pack(fill="x")
+
+        self._items: dict[str, tk.Label] = {}
+        definitions = (
+            ("avg_wait", "Espera Promedio", "0.00s", COLOR_WAITING),
+            ("avg_parking", "Estacionamiento Prom.", "0.00s", COLOR_AVAILABLE),
+            ("peak_waiting", "Pico en Espera", "0", COLOR_WAITING),
+            ("peak_occupancy", "Pico de Ocupación", f"0 / {capacity}", COLOR_OCCUPIED),
+            ("duration", "Duración Total", "N/D", COLOR_INFO),
+        )
+        for col_idx, (key, label_text, initial, color) in enumerate(definitions):
+            cell = tk.Frame(metrics_row, bg=COLOR_BG_PRIMARY, padx=10, pady=6)
+            cell.grid(
+                row=0,
+                column=col_idx,
+                sticky="nsew",
+                padx=(0, 6 if col_idx < len(definitions) - 1 else 0),
+            )
+            metrics_row.grid_columnconfigure(col_idx, weight=1, uniform="telemetry_col")
+
+            tk.Label(
+                cell,
+                text=label_text.upper(),
+                bg=COLOR_BG_PRIMARY,
+                fg=COLOR_TEXT_MUTED,
+                font=(font_family(self), 8, "bold"),
+                anchor="w",
+            ).pack(fill="x")
+
+            val_lbl = tk.Label(
+                cell,
+                text=initial,
+                bg=COLOR_BG_PRIMARY,
+                fg=color,
+                font=(font_family(self), 12, "bold"),
+                anchor="w",
+            )
+            val_lbl.pack(fill="x", pady=(2, 0))
+            self._items[key] = val_lbl
+
+    def update_from_snapshot(
+        self,
+        snapshot: dict[str, float | int | None],
+        report_text: str | None = None,
+    ) -> None:
+        """Refresh telemetry labels from a `SimulationMetrics.snapshot()` dict."""
+        avg_wait = float(snapshot.get("average_waiting_time") or 0.0)
+        avg_park = float(snapshot.get("average_parking_time") or 0.0)
+        peak_wait = int(snapshot.get("peak_waiting") or 0)
+        peak_occ = int(snapshot.get("peak_occupancy") or 0)
+        duration = snapshot.get("total_duration")
+
+        self._items["avg_wait"].config(text=f"{avg_wait:.2f}s")
+        self._items["avg_parking"].config(text=f"{avg_park:.2f}s")
+        self._items["peak_waiting"].config(text=str(peak_wait))
+        self._items["peak_occupancy"].config(text=f"{peak_occ} / {self.capacity}")
+        self._items["duration"].config(
+            text=f"{float(duration):.2f}s" if duration is not None else "En curso"
+            if snapshot.get("total_generated", 0)
+            else "N/D"
+        )
+
+        if report_text:
+            self._last_report = report_text
+            self._btn_report.config(state="normal")
+        if duration is not None:
+            self._lbl_banner.config(
+                text=f"Simulación completada en {float(duration):.2f}s",
+                fg=COLOR_AVAILABLE,
+            )
+            self._btn_report.config(state="normal")
+
+    def reset(self) -> None:
+        """Reset displayed telemetry values at the start of a new simulation run."""
+        self._items["avg_wait"].config(text="0.00s")
+        self._items["avg_parking"].config(text="0.00s")
+        self._items["peak_waiting"].config(text="0")
+        self._items["peak_occupancy"].config(text=f"0 / {self.capacity}")
+        self._items["duration"].config(text="En curso")
+        self._lbl_banner.config(text="Ejecución en progreso...", fg=COLOR_INFO)
+
+    def show_report_dialog(self) -> None:
+        """Open or focus a Toplevel window showing the full final metrics report."""
+        if not self._last_report:
+            return
+        if self._summary_window is not None and self._summary_window.winfo_exists():
+            self._summary_window.lift()
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Resumen Final de la Simulación")
+        win.geometry("480x340")
+        win.configure(bg=COLOR_BG_PRIMARY)
+        self._summary_window = win
+
+        container = tk.Frame(
+            win,
+            bg=COLOR_BG_CARD,
+            highlightbackground=COLOR_BORDER,
+            highlightthickness=1,
+            padx=16,
+            pady=14,
+        )
+        container.pack(fill="both", expand=True, padx=14, pady=14)
+
+        tk.Label(
+            container,
+            text="ESTADÍSTICAS FINALES DE LA SIMULACIÓN",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_INFO,
+            font=(font_family(self), 10, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+
+        txt = tk.Text(
+            container,
+            bg=COLOR_LOG_BG,
+            fg=COLOR_TEXT_PRIMARY,
+            font=(font_family(self, fixed=True), 9),
+            relief="flat",
+            padx=10,
+            pady=10,
+            height=13,
+            wrap="none",
+        )
+        txt.insert("1.0", self._last_report)
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True)
+
+        tk.Button(
+            container,
+            text="Cerrar",
+            bg=COLOR_BORDER,
+            fg=COLOR_TEXT_PRIMARY,
+            font=(font_family(self), 9, "bold"),
+            relief="flat",
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            command=win.destroy,
+        ).pack(anchor="e", pady=(10, 0))
 
 
 class ControlBarWidget(tk.Frame):
     """Header and controls toolbar for starting/stopping the simulator."""
+
+    MAX_STATUS_CHARS = 36
 
     def __init__(
         self,
@@ -525,6 +811,7 @@ class ControlBarWidget(tk.Frame):
         super().__init__(parent, bg=COLOR_BG_CARD, padx=16, pady=12, **kwargs)
         self.on_start = on_start
         self.on_stop = on_stop
+        self.status_message = "DETENIDO"
 
         # Application Title & Subtitle
         title_box = tk.Frame(self, bg=COLOR_BG_CARD)
@@ -550,7 +837,7 @@ class ControlBarWidget(tk.Frame):
         btn_box = tk.Frame(self, bg=COLOR_BG_CARD)
         btn_box.pack(side="right")
 
-        # Simulation status badge
+        # Simulation status badge with bounded text length so long errors do not deform layout
         self._lbl_status = tk.Label(
             btn_box,
             text="DETENIDO",
@@ -597,6 +884,14 @@ class ControlBarWidget(tk.Frame):
         )
         self._btn_stop.pack(side="left")
 
+    @classmethod
+    def _format_status_text(cls, message: str) -> str:
+        """Truncate overly long status messages so the control bar never deforms."""
+        single_line = " ".join(str(message).splitlines()).strip()
+        if len(single_line) > cls.MAX_STATUS_CHARS:
+            return single_line[: cls.MAX_STATUS_CHARS - 1] + "…"
+        return single_line
+
     def _handle_start(self) -> None:
         if self.on_start:
             self.on_start()
@@ -607,6 +902,7 @@ class ControlBarWidget(tk.Frame):
 
     def set_running(self) -> None:
         """Update visual controls when simulation is active."""
+        self.status_message = "EN EJECUCIÓN"
         self._lbl_status.config(
             text="EN EJECUCIÓN",
             bg=COLOR_AVAILABLE_BG,
@@ -617,6 +913,7 @@ class ControlBarWidget(tk.Frame):
 
     def set_stopped(self) -> None:
         """Update visual controls when simulation finishes or stops."""
+        self.status_message = "FINALIZADA"
         self._lbl_status.config(
             text="FINALIZADA",
             bg=COLOR_BORDER,
@@ -627,6 +924,12 @@ class ControlBarWidget(tk.Frame):
 
     def set_pending(self, message: str) -> None:
         """Keep both run controls unavailable during a lifecycle transition."""
-        self._lbl_status.config(text=message, bg=COLOR_BORDER, fg=COLOR_INFO)
+        self.status_message = str(message)
+        is_error = str(message).upper().startswith("ERROR")
+        self._lbl_status.config(
+            text=self._format_status_text(message),
+            bg=COLOR_OCCUPIED_BG if is_error else COLOR_BORDER,
+            fg=COLOR_OCCUPIED if is_error else COLOR_INFO,
+        )
         self._btn_start.config(state="disabled")
         self._btn_stop.config(state="disabled")

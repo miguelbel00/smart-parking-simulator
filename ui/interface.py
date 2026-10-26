@@ -34,6 +34,7 @@ from ui.widgets import (
     COLOR_WAITING,
     ControlBarWidget,
     EventLogWidget,
+    MetricsSummaryWidget,
     ParkingLotGridWidget,
     StatCard,
     WaitingQueueWidget,
@@ -91,28 +92,47 @@ class ParkingApp:
         )
         self.control_bar.pack(fill="x", padx=16, pady=(16, 10))
 
-        # 2. KPI Stat Cards Row (run-local event metrics)
+        # 2. KPI Stat Cards Grid (2 rows so 7 cards never squish on narrow screens)
         stats_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
-        stats_frame.pack(fill="x", padx=16, pady=(0, 12))
+        stats_frame.pack(fill="x", padx=16, pady=(0, 10))
 
-        for name, title, color in (
-            ("generated", "Generados", COLOR_TEXT_PRIMARY),
-            ("accepted", "Aceptados", COLOR_AVAILABLE),
-            ("rejected", "Rechazados", COLOR_OCCUPIED),
-            ("entries", "Ingresos", COLOR_INFO),
-            ("occupied", "Ocupación actual", COLOR_OCCUPIED),
-            ("finished", "Finalizados", COLOR_INFO),
-            ("cancelled", "Cancelados", COLOR_WAITING),
-        ):
-            card = StatCard(stats_frame, title=title, initial_value="0", value_color=color)
-            card.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        kpi_definitions = (
+            ("generated", "Generados", COLOR_TEXT_PRIMARY, ""),
+            ("accepted", "Aceptados", COLOR_AVAILABLE, ""),
+            ("rejected", "Rechazados", COLOR_OCCUPIED, ""),
+            ("entries", "Ingresos", COLOR_INFO, ""),
+            ("occupied", "Ocupación actual", COLOR_OCCUPIED, f"de {self.capacity} ({self.capacity} libres)"),
+            ("finished", "Finalizados", COLOR_INFO, ""),
+            ("cancelled", "Cancelados", COLOR_WAITING, ""),
+        )
+        kpi_columns = 4
+        for idx, (name, title, color, subtitle) in enumerate(kpi_definitions):
+            row = idx // kpi_columns
+            col = idx % kpi_columns
+            card = StatCard(
+                stats_frame,
+                title=title,
+                initial_value="0",
+                subtitle=subtitle,
+                value_color=color,
+            )
+            card.grid(
+                row=row,
+                column=col,
+                sticky="nsew",
+                padx=(0, 6 if col < kpi_columns - 1 else 0),
+                pady=(0, 6 if row == 0 else 0),
+            )
             setattr(self, f"card_{name}", card)
+
+        for col_idx in range(kpi_columns):
+            stats_frame.grid_columnconfigure(col_idx, weight=1, uniform="kpi_col")
 
         # 3. Main Center Area (Split Left / Right)
         center_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
         center_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
 
-        # Left Column: Parking Bay Grid + Waiting Queue Lane
+        # Left Column: Parking Bay Grid + Waiting Queue Lane + Telemetry Summary
         left_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY)
         left_col.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
@@ -124,6 +144,10 @@ class ParkingApp:
         # Visual Waiting Queue Lane
         self.waiting_lane = WaitingQueueWidget(left_col)
         self.waiting_lane.pack(fill="x")
+
+        # Extended Telemetry & Final Report Summary Panel
+        self.metrics_summary = MetricsSummaryWidget(left_col, capacity=self.capacity)
+        self.metrics_summary.pack(fill="x", pady=(10, 0))
 
         # Right Column: Live Event Log Terminal
         right_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY, width=420)
@@ -223,6 +247,8 @@ class ParkingApp:
         if event_type == "SIMULATION_STARTED":
             self.parking_grid.reset()
             self.waiting_lane.clear()
+            if hasattr(self, "metrics_summary"):
+                self.metrics_summary.reset()
             self._update_display_counters()
             if not self._closing:
                 self.control_bar.set_running()
@@ -234,6 +260,7 @@ class ParkingApp:
 
         # 2. Simulation Lifecycle: Finished
         elif event_type == "SIMULATION_FINISHED":
+            self._update_display_counters()
             if not self._closing:
                 self.control_bar.set_pending("FINALIZANDO")
                 self._schedule_restart_check()
@@ -311,6 +338,10 @@ class ParkingApp:
         self.occupied_count = self.projection.occupied_count
         self.waiting_count = len(self.projection.waiting)
         self.card_occupied.update_value(self.occupied_count)
+        if hasattr(self.card_occupied, "update_subtitle"):
+            self.card_occupied.update_subtitle(
+                f"de {self.capacity} ({self.projection.available_count} libres)"
+            )
         self.total_finished = self.projection.finished_count
         self.card_finished.update_value(self.total_finished)
         metrics = getattr(getattr(self, "simulator", None), "metrics", None)
@@ -320,6 +351,15 @@ class ParkingApp:
         self.card_rejected.update_value(snapshot.get("total_rejected", 0))
         self.card_entries.update_value(snapshot.get("total_parked", 0))
         self.card_cancelled.update_value(snapshot.get("total_cancelled", 0))
+        if hasattr(self, "metrics_summary"):
+            report_text = (
+                metrics.report()
+                if metrics is not None
+                and hasattr(metrics, "report")
+                and snapshot.get("total_duration") is not None
+                else None
+            )
+            self.metrics_summary.update_from_snapshot(snapshot, report_text=report_text)
 
     def _reconcile_snapshot(self, snapshot: ParkingSnapshot) -> None:
         """Refresh displayed occupancy from a safe core snapshot when supplied."""

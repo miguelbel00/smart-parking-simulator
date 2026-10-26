@@ -582,10 +582,76 @@ def test_parking_app_builds_kpi_cards_with_real_tk() -> None:
         assert slot.plate == "REAL-34"
         assert slot._lbl_detail.cget("text") == "REAL-34 (#34)"
         assert slot._lbl_id.cget("text") == "Espacio #1"
+        assert app.card_occupied.subtitle == "de 5 (4 libres)"
         app._dispatch_event(event("VEHICLE_EXITED", 34, 0, plate="REAL-34"))
         assert slot.plate is None
+        assert app.card_occupied.subtitle == "de 5 (5 libres)"
         app._dispatch_event(event("VEHICLE_ENTERED", 35, 0))
         assert slot.plate is None
         assert slot._lbl_detail.cget("text") == "Auto #35"
+    finally:
+        app.root.destroy()
+
+
+def test_visual_stability_log_cap_scroll_queue_and_telemetry_summary() -> None:
+    app = ParkingApp(event_queue=Queue(), capacity=5)
+    try:
+        slot = app.parking_grid.slots[1]
+        # V1: Slot border thickness and label char widths stay invariant across states
+        assert int(slot.cget("highlightthickness")) == 2
+        assert int(slot._lbl_icon.cget("width")) == 6
+        assert int(slot._lbl_status.cget("width")) == 12
+        assert int(slot._lbl_detail.cget("width")) == 16
+        slot.set_occupied(1, "EDU-001")
+        assert int(slot.cget("highlightthickness")) == 2
+        slot.set_available()
+        assert int(slot.cget("highlightthickness")) == 2
+
+        # V2: WaitingQueueWidget uses scrollable canvas and supports many vehicles
+        for vid in range(1, 15):
+            app.waiting_lane.add_vehicle(vid, f"EDU-{vid:03d}")
+        assert len(app.waiting_lane._vehicles) == 14
+        assert app.waiting_lane._canvas.bbox("all") is not None
+
+        # V4: Long error status is truncated visually while preserving full message
+        long_err = "ERROR: " + ("x" * 100)
+        app.control_bar.set_pending(long_err)
+        assert app.control_bar.status_message == long_err
+        assert len(app.control_bar._lbl_status.cget("text")) <= app.control_bar.MAX_STATUS_CHARS
+
+        # V7: EventLogWidget caps stored lines at max_lines
+        app.event_log.max_lines = 5
+        app.event_log.clear()
+        for idx in range(12):
+            app.event_log.log("VEHICLE_CREATED", f"msg-{idx}", "12:00:00")
+        assert app.event_log.line_count == 5
+        content = app.event_log._text.get("1.0", "end-1c").splitlines()
+        assert len(content) == 5
+        assert "msg-11" in content[-1] and "msg-0" not in "\n".join(content)
+
+        # Missing metrics + final report summary panel update on SIMULATION_FINISHED
+        metrics = SimulationMetrics()
+        metrics.record_generated()
+        metrics.record_admitted()
+        metrics.record_event(ParkingEvent("SIMULATION_STARTED", 10.0))
+        metrics.record_event(ParkingEvent("VEHICLE_WAITING", 10.5, vehicle_id=1))
+        metrics.record_event(
+            ParkingEvent("VEHICLE_ENTERED", 12.0, vehicle_id=1, space_id=0, waiting_time=1.5)
+        )
+        metrics.record_event(ParkingEvent("VEHICLE_EXITED", 16.0, vehicle_id=1, space_id=0))
+        metrics.record_event(ParkingEvent("VEHICLE_FINISHED", 16.0, vehicle_id=1))
+        metrics.record_event(ParkingEvent("SIMULATION_FINISHED", 18.0))
+        app.simulator = SimpleNamespace(
+            metrics=metrics, is_active=lambda: False, is_drained=lambda: True
+        )
+        app._dispatch_event(ParkingEvent("SIMULATION_FINISHED", 18.0))
+
+        assert app.metrics_summary._items["avg_wait"].cget("text") == "1.50s"
+        assert app.metrics_summary._items["avg_parking"].cget("text") == "4.00s"
+        assert app.metrics_summary._items["peak_waiting"].cget("text") == "1"
+        assert app.metrics_summary._items["peak_occupancy"].cget("text") == "1 / 5"
+        assert app.metrics_summary._items["duration"].cget("text") == "8.00s"
+        assert app.metrics_summary._btn_report.cget("state") == "normal"
+        assert "Estadísticas finales" in app.metrics_summary._last_report
     finally:
         app.root.destroy()
