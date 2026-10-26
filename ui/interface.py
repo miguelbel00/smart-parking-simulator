@@ -181,14 +181,9 @@ class ParkingApp:
                 if name == "ERROR":
                     self.control_bar.set_pending(f"ERROR: {error}")
                     self.event_log.log("ENGINE_ERROR", str(error), datetime.now().strftime("%H:%M:%S"))
-                elif name == "SHUTDOWN_COMPLETE":
-                    self._shutdown_complete = True
-                elif name == "CLEANUP_COMPLETE":
-                    self._cleanup_complete = True
-                elif name == "START_ACCEPTED":
-                    # This acknowledges the command only; SIMULATION_STARTED
-                    # remains the authoritative visible lifecycle event.
-                    pass
+                # CLEANUP_COMPLETE and START_ACCEPTED need no handling here:
+                # _check_shutdown reads simulator.cleanup_complete directly, and
+                # SIMULATION_STARTED remains the authoritative lifecycle event.
         while processed < limit:
             try:
                 event = self.event_queue.get_nowait()
