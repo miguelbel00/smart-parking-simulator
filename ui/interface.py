@@ -23,18 +23,24 @@ from typing import Any
 
 from core.parking import ParkingSnapshot
 from simulation import config
+from simulation.metrics import SimulationMetrics
 from ui.fonts import font_family
 from ui.projection import ParkingProjection
 from ui.widgets import (
     COLOR_AVAILABLE,
+    COLOR_BG_CARD,
     COLOR_BG_PRIMARY,
+    COLOR_BORDER,
     COLOR_INFO,
     COLOR_OCCUPIED,
+    COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_WAITING,
     ControlBarWidget,
     EventLogWidget,
+    MetricsSummaryWidget,
     ParkingLotGridWidget,
+    RequestTrackingTableWidget,
     StatCard,
     WaitingQueueWidget,
 )
@@ -61,6 +67,8 @@ class ParkingApp:
 
         # Run-local display state, independent of core's mutable internals.
         self.projection = ParkingProjection(capacity)
+        self._ui_metrics = SimulationMetrics()
+        self._ui_metrics_active = False
         self.occupied_count = 0
         self.waiting_count = 0
         self.total_finished = 0
@@ -68,8 +76,8 @@ class ParkingApp:
         # Initialize Main Window
         self.root = tk.Tk()
         self.root.title("Smart Parking Simulator — Monitor de Concurrencia")
-        self.root.geometry("1100x740")
-        self.root.minsize(900, 600)
+        self.root.geometry("1220x780")
+        self.root.minsize(1020, 660)
         self.root.configure(bg=COLOR_BG_PRIMARY)
 
         # Build UI layout
@@ -89,70 +97,165 @@ class ParkingApp:
             on_start=self._start_simulation,
             on_stop=self._stop_simulation,
         )
-        self.control_bar.pack(fill="x", padx=16, pady=(16, 10))
+        self.control_bar.pack(fill="x", padx=16, pady=(12, 8))
 
-        # 2. KPI Stat Cards Row (run-local event metrics)
-        stats_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
-        stats_frame.pack(fill="x", padx=16, pady=(0, 12))
+        # 2. Status Bar (Footer) packed at bottom before center_frame expands
+        self._build_footer()
 
-        for name, title, color in (
-            ("generated", "Generados", COLOR_TEXT_PRIMARY),
-            ("accepted", "Aceptados", COLOR_AVAILABLE),
-            ("rejected", "Rechazados", COLOR_OCCUPIED),
-            ("entries", "Ingresos", COLOR_INFO),
-            ("occupied", "Ocupación actual", COLOR_OCCUPIED),
-            ("finished", "Finalizados", COLOR_INFO),
-            ("cancelled", "Cancelados", COLOR_WAITING),
-        ):
-            card = StatCard(stats_frame, title=title, initial_value="0", value_color=color)
-            card.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        # 3. Grouped KPI Counters Area (Group A: Current Lot State | Group B: Run Outcomes & Metrics)
+        counters_bar = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
+        counters_bar.pack(fill="x", padx=16, pady=(0, 8))
+        counters_bar.grid_columnconfigure(0, weight=3)
+        counters_bar.grid_columnconfigure(1, weight=8)
+
+        # Group A: Current Parking Lot State
+        lot_state_box = tk.Frame(
+            counters_bar,
+            bg=COLOR_BG_CARD,
+            highlightbackground=COLOR_BORDER,
+            highlightthickness=1,
+            padx=8,
+            pady=6,
+        )
+        lot_state_box.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        tk.Label(
+            lot_state_box,
+            text="ESTADO ACTUAL DEL PARQUEADERO",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_INFO,
+            font=(font_family(self.root), 8, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+
+        lot_cards_row = tk.Frame(lot_state_box, bg=COLOR_BG_CARD)
+        lot_cards_row.pack(fill="x")
+
+        lot_state_defs = (
+            ("occupied", "Ocupación actual", COLOR_OCCUPIED, f"de {self.capacity} ({self.capacity} libres)"),
+            ("available", "Disponibles", COLOR_AVAILABLE, f"de {self.capacity}"),
+            ("waiting", "Pendientes", COLOR_WAITING, "por ingresar"),
+        )
+        for col_idx, (name, title, color, subtitle) in enumerate(lot_state_defs):
+            card = StatCard(
+                lot_cards_row,
+                title=title,
+                initial_value=str(self.capacity) if name == "available" else "0",
+                subtitle=subtitle,
+                value_color=color,
+                compact=True,
+            )
+            card.grid(
+                row=0,
+                column=col_idx,
+                sticky="nsew",
+                padx=(0, 4 if col_idx < len(lot_state_defs) - 1 else 0),
+            )
+            lot_cards_row.grid_columnconfigure(col_idx, weight=1, uniform="lot_kpi")
             setattr(self, f"card_{name}", card)
 
-        # 3. Main Center Area (Split Left / Right)
+        # Group B: Execution Outcomes & Performance Metrics
+        run_results_box = tk.Frame(
+            counters_bar,
+            bg=COLOR_BG_CARD,
+            highlightbackground=COLOR_BORDER,
+            highlightthickness=1,
+            padx=8,
+            pady=6,
+        )
+        run_results_box.grid(row=0, column=1, sticky="nsew")
+
+        tk.Label(
+            run_results_box,
+            text="RESULTADOS Y MÉTRICAS DE EJECUCIÓN",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_INFO,
+            font=(font_family(self.root), 8, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+
+        run_cards_row = tk.Frame(run_results_box, bg=COLOR_BG_CARD)
+        run_cards_row.pack(fill="x")
+
+        run_defs = (
+            ("generated", "Generados", COLOR_TEXT_PRIMARY, ""),
+            ("accepted", "Aceptados", COLOR_AVAILABLE, ""),
+            ("rejected", "Rechazados", COLOR_OCCUPIED, ""),
+            ("entries", "Ingresos", COLOR_INFO, ""),
+            ("finished", "Finalizados", COLOR_INFO, ""),
+            ("cancelled", "Cancelados", COLOR_WAITING, ""),
+            ("peak_occupancy", "Máx. Ocup.", COLOR_OCCUPIED, f"de {self.capacity}"),
+            ("avg_wait", "Espera Prom.", COLOR_WAITING, "segundos"),
+        )
+        for col_idx, (name, title, color, subtitle) in enumerate(run_defs):
+            card = StatCard(
+                run_cards_row,
+                title=title,
+                initial_value="0.00s" if name == "avg_wait" else "0",
+                subtitle=subtitle,
+                value_color=color,
+                compact=True,
+            )
+            card.grid(
+                row=0,
+                column=col_idx,
+                sticky="nsew",
+                padx=(0, 4 if col_idx < len(run_defs) - 1 else 0),
+            )
+            run_cards_row.grid_columnconfigure(col_idx, weight=1, uniform="run_kpi")
+            setattr(self, f"card_{name}", card)
+
+        # 4. Main Center Area (Grid Split: Left Operational Workspace / Right Event Log + Final Summary)
         center_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY)
-        center_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        center_frame.pack(fill="both", expand=True, padx=16, pady=(0, 6))
+        center_frame.grid_columnconfigure(0, weight=6, minsize=560)
+        center_frame.grid_columnconfigure(1, weight=5, minsize=400)
+        center_frame.grid_rowconfigure(0, weight=1)
 
-        # Left Column: Parking Bay Grid + Waiting Queue Lane
+        # Left Column: Parking Bay Grid + Grouped Pending Queue + Request Tracking Table
         left_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY)
-        left_col.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
-        # Visual Grid of Parking Slots
+        # Visual Grid of Parking Slots (expand=False keeps proportional height when maximized)
         self.parking_grid = ParkingLotGridWidget(left_col, columns=5)
-        self.parking_grid.pack(fill="both", expand=True, pady=(0, 10))
+        self.parking_grid.pack(fill="x", expand=False, pady=(0, 8))
         self.parking_grid.setup_slots(self.capacity)
 
-        # Visual Waiting Queue Lane
+        # Grouped Pending Requests by Authorized Slot
         self.waiting_lane = WaitingQueueWidget(left_col)
-        self.waiting_lane.pack(fill="x")
+        self.waiting_lane.pack(fill="x", pady=(0, 8))
 
-        # Right Column: Live Event Log Terminal
-        right_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY, width=420)
-        right_col.pack(side="right", fill="both", expand=False)
-        right_col.pack_propagate(False)
+        # Request Lifecycle Tracking Table (expands vertically to use available space)
+        self.request_table = RequestTrackingTableWidget(left_col)
+        self.request_table.pack(fill="both", expand=True)
+
+        # Right Column: Filterable Live Event Log + Persistent Run Summary Panel
+        right_col = tk.Frame(center_frame, bg=COLOR_BG_PRIMARY)
+        right_col.grid(row=0, column=1, sticky="nsew")
 
         self.event_log = EventLogWidget(right_col)
         self.event_log.pack(fill="both", expand=True)
 
-        # 4. Status Bar (Footer)
-        self._build_footer()
+        self.metrics_summary = MetricsSummaryWidget(right_col, capacity=self.capacity)
+        self.metrics_summary.pack(fill="x", pady=(8, 0))
 
     def _build_footer(self) -> None:
-        """Construct the bottom status bar displaying OS concepts."""
+        """Construct the bottom status bar explaining the real IPC architecture."""
         footer_frame = tk.Frame(self.root, bg=COLOR_BG_PRIMARY, padx=16, pady=4)
         footer_frame.pack(fill="x", side="bottom")
 
-        lbl_os_info = tk.Label(
+        self._lbl_arch_info = tk.Label(
             footer_frame,
-            text="SO Concept: Semaphore (Capacidad) | Mutex Lock (Asignación) | Queue (Workers -> UI)",
+            text="Arquitectura: Motor hijo → IPC → adaptador del proceso padre → cola local → Tkinter",
             bg=COLOR_BG_PRIMARY,
             fg="#64748b",
             font=(font_family(self.root), 8),
         )
-        lbl_os_info.pack(side="left")
+        self._lbl_arch_info.pack(side="left")
 
         self._lbl_poll_info = tk.Label(
             footer_frame,
-            text=f"Refresco: after({self.poll_interval_ms}ms) | Hilo Tkinter: Main",
+            text=f"Refresco: after({self.poll_interval_ms}ms) | Hilo principal Tkinter | Estado determinado por Core",
             bg=COLOR_BG_PRIMARY,
             fg="#64748b",
             font=(font_family(self.root), 8),
@@ -181,14 +284,13 @@ class ParkingApp:
                 if name == "ERROR":
                     self.control_bar.set_pending(f"ERROR: {error}")
                     self.event_log.log("ENGINE_ERROR", str(error), datetime.now().strftime("%H:%M:%S"))
-                elif name == "SHUTDOWN_COMPLETE":
-                    self._shutdown_complete = True
-                elif name == "CLEANUP_COMPLETE":
-                    self._cleanup_complete = True
-                elif name == "START_ACCEPTED":
-                    # This acknowledges the command only; SIMULATION_STARTED
-                    # remains the authoritative visible lifecycle event.
-                    pass
+                    if hasattr(self, "metrics_summary"):
+                        self.metrics_summary.set_warning(
+                            f"ADVERTENCIA: Ejecución o auditoría incompleta ({error})"
+                        )
+                # CLEANUP_COMPLETE and START_ACCEPTED need no handling here:
+                # _check_shutdown reads simulator.cleanup_complete directly, and
+                # SIMULATION_STARTED remains the authoritative lifecycle event.
         while processed < limit:
             try:
                 event = self.event_queue.get_nowait()
@@ -200,6 +302,49 @@ class ParkingApp:
             self._dispatch_event(event)
             processed += 1
         return processed < limit
+
+    def _record_ui_metric_event(self, event: Any) -> None:
+        """Fold a processed event into the UI-local `SimulationMetrics` instance.
+
+        Ensures displayed metrics never run ahead of events actually consumed
+        by Tkinter when a backlog exists in `event_queue`.
+        """
+        if not hasattr(self, "_ui_metrics") or self._ui_metrics is None:
+            self._ui_metrics = SimulationMetrics()
+        event_type = getattr(event, "type", str(event))
+        if event_type == "SIMULATION_STARTED":
+            self._ui_metrics = SimulationMetrics()
+            self._ui_metrics_active = True
+        elif event_type in {"VEHICLE_CREATED", "VEHICLE_REJECTED"}:
+            self._ui_metrics_active = True
+            self._ui_metrics.record_generated()
+            if event_type == "VEHICLE_CREATED":
+                self._ui_metrics.record_admitted()
+        if getattr(self, "_ui_metrics_active", False):
+            self._ui_metrics.record_event(event)
+
+    def _sync_tracking_views(self, vehicle_id: int | None = None) -> None:
+        """Keep the grouped pending queue and request tracking table synchronized."""
+        if hasattr(self.waiting_lane, "sync_from_projection"):
+            self.waiting_lane.sync_from_projection(self.projection)
+        if hasattr(self, "request_table"):
+            if vehicle_id is not None and vehicle_id in self.projection.requests:
+                self.request_table.upsert_record(self.projection.requests[vehicle_id])
+            else:
+                self.request_table.sync_from_projection(self.projection)
+
+    def _rebuild_views_from_canonical_state(self) -> None:
+        """Reconstruct all visual widgets from canonical projection and UI metrics.
+
+        Called after snapshot reconciliation or if a transient widget error occurs,
+        without duplicating events, requests, or metrics.
+        """
+        self.parking_grid.render_occupied(self.projection.occupied, self.projection.plates)
+        if hasattr(self.waiting_lane, "sync_from_projection"):
+            self.waiting_lane.sync_from_projection(self.projection)
+        if hasattr(self, "request_table"):
+            self.request_table.sync_from_projection(self.projection)
+        self._update_display_counters()
 
     def _dispatch_event(self, event: Any) -> None:
         """Dispatch a single ParkingEvent to update relevant visual components.
@@ -223,111 +368,220 @@ class ParkingApp:
 
         time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
         slot_key = self.projection.apply_event(event)
+        self._record_ui_metric_event(event)
 
-        # 1. Simulation Lifecycle: Started
-        if event_type == "SIMULATION_STARTED":
-            self.parking_grid.reset()
-            self.waiting_lane.clear()
-            self._update_display_counters()
-            if not self._closing:
-                self.control_bar.set_running()
-            self.event_log.log(
-                event_type,
-                "Simulación iniciada. Productor de vehículos activo.",
-                time_str,
-            )
+        try:
+            # 1. Simulation Lifecycle: Started
+            if event_type == "SIMULATION_STARTED":
+                self.parking_grid.reset()
+                self.waiting_lane.clear()
+                if hasattr(self, "request_table"):
+                    self.request_table.clear()
+                if hasattr(self, "metrics_summary"):
+                    self.metrics_summary.reset()
+                self._update_display_counters()
+                if not self._closing:
+                    self.control_bar.set_running()
+                self.event_log.log(
+                    event_type,
+                    "Simulación iniciada. Productor de vehículos activo.",
+                    time_str,
+                )
 
-        # 2. Simulation Lifecycle: Finished
-        elif event_type == "SIMULATION_FINISHED":
-            if not self._closing:
-                self.control_bar.set_pending("FINALIZANDO")
-                self._schedule_restart_check()
-            self.event_log.log(
-                event_type,
-                f"Simulación terminada. Finalizaciones normales: {self.total_finished}.",
-                time_str,
-            )
+            # 2. Simulation Lifecycle: Finished
+            elif event_type == "SIMULATION_FINISHED":
+                self._update_display_counters()
+                if not self._closing:
+                    self.control_bar.set_pending("FINALIZANDO")
+                    self._schedule_restart_check()
+                self.event_log.log(
+                    event_type,
+                    f"Simulación terminada. Finalizaciones normales: {self.total_finished}.",
+                    time_str,
+                )
 
-        # 3. OS Concept: Vehicle request created (state: CREATED)
-        elif event_type == "VEHICLE_CREATED":
-            msg = f"Solicitud #{vehicle_id} creada: {plate}."
-            self.event_log.log(event_type, msg, time_str)
+            # 3. OS Concept: Vehicle request created (state: CREATED)
+            elif event_type == "VEHICLE_CREATED":
+                self._sync_tracking_views(vehicle_id)
+                self._update_display_counters()
+                msg = f"Solicitud #{vehicle_id} creada: {plate}."
+                self.event_log.log(event_type, msg, time_str)
 
-        # 4. OS Concept: Request waits for an eligible resource (state: WAITING)
-        elif event_type == "VEHICLE_WAITING":
-            if vehicle_id is not None:
-                self.waiting_lane.add_vehicle(vehicle_id, plate)
-            self._update_display_counters()
+            # 4. OS Concept: Request waits for an eligible resource (state: WAITING)
+            elif event_type == "VEHICLE_WAITING":
+                if vehicle_id is not None:
+                    self.waiting_lane.add_vehicle(vehicle_id, plate)
+                self._sync_tracking_views(vehicle_id)
+                self._update_display_counters()
 
-            wait_info = f" (espera inicial: {waiting_time:.2f}s)" if waiting_time is not None else ""
-            destination = (f" para Espacio autorizado #{authorized_space_id + 1}"
-                           if authorized_space_id is not None else "")
-            msg = f"{plate} (#{vehicle_id}) en espera{destination}{wait_info}."
-            self.event_log.log(event_type, msg, time_str)
+                # Core reports waiting_time on VEHICLE_ENTERED, not while waiting.
+                destination = (
+                    f" para Espacio autorizado #{authorized_space_id + 1}"
+                    if authorized_space_id is not None
+                    else ""
+                )
+                msg = f"{plate} (#{vehicle_id}) en espera{destination}."
+                self.event_log.log(event_type, msg, time_str)
 
-        # 5. OS Concept: Request acquired a slot (state: PARKED)
-        elif event_type == "VEHICLE_ENTERED":
-            if vehicle_id is not None:
-                self.waiting_lane.remove_vehicle(vehicle_id)
-            if slot_key is not None and vehicle_id is not None:
-                self.parking_grid.occupy_slot(slot_key, vehicle_id, vehicle_plate)
-            self._update_display_counters()
+            # 5. OS Concept: Request acquired a slot (state: PARKED)
+            elif event_type == "VEHICLE_ENTERED":
+                if vehicle_id is not None:
+                    self.waiting_lane.remove_vehicle(vehicle_id)
+                if slot_key is not None and vehicle_id is not None:
+                    self.parking_grid.occupy_slot(slot_key, vehicle_id, vehicle_plate)
+                self._sync_tracking_views(vehicle_id)
+                self._update_display_counters()
 
-            msg = f"{plate} (#{vehicle_id}) ingresó al Espacio #{slot_key}."
-            self.event_log.log(event_type, msg, time_str)
+                wait_info = (
+                    f" tras esperar {waiting_time:.2f}s"
+                    if waiting_time is not None
+                    else ""
+                )
+                msg = f"{plate} (#{vehicle_id}) ingresó al Espacio #{slot_key}{wait_info}."
+                self.event_log.log(event_type, msg, time_str)
 
-        # 6. OS Concept: Request released its slot resource
-        elif event_type == "VEHICLE_EXITED":
-            if slot_key is not None:
-                self.parking_grid.free_slot(slot_key)
-            self._update_display_counters()
+            # 6. OS Concept: Request released its slot resource
+            elif event_type == "VEHICLE_EXITED":
+                if slot_key is not None:
+                    self.parking_grid.free_slot(slot_key)
+                self._sync_tracking_views(vehicle_id)
+                self._update_display_counters()
 
-            msg = f"{plate} (#{vehicle_id}) salió del Espacio #{slot_key}."
-            self.event_log.log(event_type, msg, time_str)
+                msg = f"{plate} (#{vehicle_id}) salió del Espacio #{slot_key}."
+                self.event_log.log(event_type, msg, time_str)
 
-        # 7. OS Concept: Request completed normally (state: FINISHED)
-        elif event_type == "VEHICLE_FINISHED":
-            if vehicle_id is not None:
-                self.waiting_lane.remove_vehicle(vehicle_id)
-            self._update_display_counters()
-            msg = f"{plate} (#{vehicle_id}) finalizó normalmente."
-            self.event_log.log(event_type, msg, time_str)
+            # 7. OS Concept: Request completed normally (state: FINISHED)
+            elif event_type == "VEHICLE_FINISHED":
+                if vehicle_id is not None:
+                    self.waiting_lane.remove_vehicle(vehicle_id)
+                self._sync_tracking_views(vehicle_id)
+                self._update_display_counters()
+                msg = f"{plate} (#{vehicle_id}) finalizó normalmente."
+                self.event_log.log(event_type, msg, time_str)
 
-        elif event_type == "VEHICLE_REJECTED":
-            self.event_log.log(event_type, f"Solicitud #{vehicle_id} ({plate}) rechazada: {reason or 'motivo no informado'}.", time_str)
-            self._update_display_counters()
+            elif event_type == "VEHICLE_REJECTED":
+                self._sync_tracking_views(vehicle_id)
+                self.event_log.log(
+                    event_type,
+                    f"Solicitud #{vehicle_id} ({plate}) rechazada: {reason or 'motivo no informado'}.",
+                    time_str,
+                )
+                self._update_display_counters()
 
-        elif event_type == "VEHICLE_CANCELLED":
-            if vehicle_id is not None:
-                self.waiting_lane.remove_vehicle(vehicle_id)
-            self._update_display_counters()
-            self.event_log.log(event_type, f"{plate} (#{vehicle_id}) cancelado mientras esperaba.", time_str)
+            elif event_type == "VEHICLE_CANCELLED":
+                if vehicle_id is not None:
+                    self.waiting_lane.remove_vehicle(vehicle_id)
+                self._sync_tracking_views(vehicle_id)
+                self._update_display_counters()
+                self.event_log.log(
+                    event_type,
+                    f"{plate} (#{vehicle_id}) cancelado mientras esperaba.",
+                    time_str,
+                )
 
-        # Fallback for generic or custom events
-        else:
-            msg = f"Vehículo #{vehicle_id}, Espacio #{space_id}."
-            self.event_log.log(event_type, msg, time_str)
+            elif event_type == "ENGINE_ERROR":
+                err_detail = reason or "Fallo inesperado en el motor."
+                self.control_bar.set_pending(f"ERROR: {err_detail}")
+                if hasattr(self, "metrics_summary"):
+                    self.metrics_summary.set_warning(
+                        f"Advertencia: Ejecución o auditoría incompleta ({err_detail})"
+                    )
+                self.event_log.log(
+                    event_type,
+                    f"Error del motor: {err_detail}",
+                    time_str,
+                )
+
+            # Fallback for generic or custom events
+            else:
+                msg = f"Vehículo #{vehicle_id}, Espacio #{space_id}."
+                self.event_log.log(event_type, msg, time_str)
+        except Exception:
+            self._rebuild_views_from_canonical_state()
+
+    def _active_metrics_source(self) -> tuple[Any, dict[str, Any]]:
+        """Return the metrics object and snapshot coherent with UI-processed events."""
+        sim_metrics = getattr(getattr(self, "simulator", None), "metrics", None)
+        ui_metrics = getattr(self, "_ui_metrics", None)
+        ui_active = getattr(self, "_ui_metrics_active", False)
+        queue_has_backlog = not self.event_queue.empty()
+
+        # If simulator.metrics is a real SimulationMetrics and either the UI queue
+        # still has unprocessed events or _ui_metrics is actively tracking the run,
+        # use _ui_metrics so counters never jump ahead of processed UI events.
+        if (
+            ui_metrics is not None
+            and isinstance(sim_metrics, SimulationMetrics)
+            and (queue_has_backlog or ui_active)
+        ):
+            ui_snap = ui_metrics.snapshot()
+            sim_snap = sim_metrics.snapshot()
+            # Only fall back to sim_metrics if a test populated sim_metrics directly
+            # without dispatching SIMULATION_STARTED / VEHICLE_CREATED through the UI.
+            if ui_snap.get("total_generated", 0) > 0 or queue_has_backlog:
+                return ui_metrics, ui_snap
+            return sim_metrics, sim_snap
+
+        if sim_metrics is not None:
+            return sim_metrics, sim_metrics.snapshot()
+        if ui_metrics is not None and ui_active:
+            return ui_metrics, ui_metrics.snapshot()
+        return None, {}
 
     def _update_display_counters(self) -> None:
-        """Keep cards synchronized with the projected grid and waiting IDs."""
+        """Keep cards synchronized with the projected grid and UI-processed events."""
         self.occupied_count = self.projection.occupied_count
         self.waiting_count = len(self.projection.waiting)
+        pending_count = getattr(self.projection, "pending_count", self.waiting_count)
+
         self.card_occupied.update_value(self.occupied_count)
+        if hasattr(self.card_occupied, "update_subtitle"):
+            self.card_occupied.update_subtitle(
+                f"de {self.capacity} ({self.projection.available_count} libres)"
+            )
+        if hasattr(self, "card_available"):
+            self.card_available.update_value(self.projection.available_count)
+        if hasattr(self, "card_waiting"):
+            self.card_waiting.update_value(pending_count)
+
         self.total_finished = self.projection.finished_count
         self.card_finished.update_value(self.total_finished)
-        metrics = getattr(getattr(self, "simulator", None), "metrics", None)
-        snapshot = metrics.snapshot() if metrics is not None else {}
+
+        metrics_obj, snapshot = self._active_metrics_source()
         self.card_generated.update_value(snapshot.get("total_generated", 0))
         self.card_accepted.update_value(snapshot.get("total_admitted", 0))
         self.card_rejected.update_value(snapshot.get("total_rejected", 0))
         self.card_entries.update_value(snapshot.get("total_parked", 0))
         self.card_cancelled.update_value(snapshot.get("total_cancelled", 0))
 
+        if hasattr(self, "card_peak_occupancy"):
+            self.card_peak_occupancy.update_value(snapshot.get("peak_occupancy", 0))
+        if hasattr(self, "card_avg_wait"):
+            avg_wait = float(snapshot.get("average_waiting_time") or 0.0)
+            self.card_avg_wait.update_value(f"{avg_wait:.2f}s")
+
+        if hasattr(self, "metrics_summary"):
+            report_text = (
+                metrics_obj.report()
+                if metrics_obj is not None
+                and hasattr(metrics_obj, "report")
+                and snapshot.get("total_duration") is not None
+                else None
+            )
+            sim_err = getattr(getattr(self, "simulator", None), "error", None)
+            warning = (
+                f"ADVERTENCIA: Ejecución o auditoría incompleta ({sim_err})"
+                if sim_err is not None
+                else None
+            )
+            self.metrics_summary.update_from_snapshot(
+                snapshot, report_text=report_text, warning=warning
+            )
+
     def _reconcile_snapshot(self, snapshot: ParkingSnapshot) -> None:
         """Refresh displayed occupancy from a safe core snapshot when supplied."""
         self.projection.reconcile_snapshot(snapshot)
-        self.parking_grid.render_occupied(self.projection.occupied)
-        self._update_display_counters()
+        self._rebuild_views_from_canonical_state()
 
     def _start_simulation(self) -> None:
         """Trigger simulator start if provided."""
@@ -357,11 +611,12 @@ class ParkingApp:
             )
 
     def _stop_simulation(self) -> None:
-        """Trigger simulator stop if provided."""
+        """Trigger simulator stop if provided and reflect stop-requested state."""
         if self._closing:
             return
         if self.simulator is not None:
             if hasattr(self.simulator, "stop"):
+                self.control_bar.set_pending("DETENCIÓN SOLICITADA")
                 self.simulator.stop()
         else:
             self.control_bar.set_stopped()
