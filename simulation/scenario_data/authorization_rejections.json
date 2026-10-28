@@ -1,0 +1,6 @@
+{
+  "vehicles": [
+    {"plate": "REJ-OK", "authorized": true, "space_id": 0},
+    {"plate": "REJ-DENIED", "authorized": false, "space_id": null}
+  ]
+}

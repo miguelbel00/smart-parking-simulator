@@ -1,0 +1,5 @@
+{
+  "vehicles": [
+    {"plate": "NORM-A", "authorized": true, "space_id": 0}
+  ]
+}

@@ -4,7 +4,8 @@
 
 Desarrollar un simulador de parqueadero inteligente utilizando Python y Tkinter.
 
-El proyecto debe representar conceptos fundamentales de Sistemas Operativos:
+El requisito académico incluye procesos reales y comunicación entre procesos
+(IPC), además de conceptos fundamentales de Sistemas Operativos:
 
 - Procesos e hilos.
 - Concurrencia.
@@ -15,8 +16,21 @@ El proyecto debe representar conceptos fundamentales de Sistemas Operativos:
 - Bloqueo de procesos.
 - Gestión de recursos compartidos.
 
-Cada vehículo debe comportarse como una unidad independiente de ejecución
-representada mediante un hilo.
+Cada vehículo se representa mediante un objeto `Vehicle` que contiene los
+datos de la solicitud; no hereda de `Thread`. Cada ejecución crea un
+trabajador de admisión y otro de vencimientos/salidas en `ParkingLot`, además
+del productor de `Simulator`.
+
+El runtime implementa multiprocessing e IPC: un proceso de motor creado con
+`spawn` ejecuta la simulación y posee el estado de `ParkingLot`; colas
+multiprocessing transportan comandos, respuestas, eventos y ciertos registros
+de auditoría entre ese proceso y el proceso de la UI. Esto describe la
+implementación, pero no demuestra por sí solo el cumplimiento académico: la
+validación de los requisitos sigue pendiente. La política aprobada es FIFO
+entre solicitudes elegibles, con FIFO estricto por puesto autorizado; un puesto
+bloqueado no impide atender solicitudes elegibles de otros puestos.
+El profesor sugirió estudiar sesiones de usuario/usuarios concurrentes, pero
+no exigió ese diseño.
 
 Los espacios del parqueadero representan recursos limitados compartidos
 entre los vehículos.
@@ -40,9 +54,12 @@ Los módulos deben mantenerse desacoplados.
 
 La dirección de dependencias y eventos es:
 
-main.py compone `simulation`, `core`, `queue.Queue` y `ui`. `simulation`
-invoca únicamente la API pública de `core`. Core y Simulator publican sus
-eventos en la cola compartida, que consume la UI.
+`main.py` compone la UI, la sesión de auditoría y `MultiprocessController`.
+El controlador inicia el proceso de motor; allí se crean `ParkingLot` y
+`Simulator`, que usan la API de core. `MultiprocessGUIAdapter` mantiene un
+hilo de transporte en el proceso de la UI, traslada eventos IPC a la
+`queue.Queue` local de Tk y la UI consume esa cola. Esa `queue.Queue` comunica
+hilos dentro del proceso de la UI; NO es el mecanismo IPC.
 
 La interfaz gráfica NO debe controlar directamente los hilos.
 
@@ -114,9 +131,13 @@ simulation/metrics.py
 
 Este contrato NO debe modificarse unilateralmente.
 
-La comunicación entre los hilos y la interfaz debe realizarse mediante:
+La comunicación entre el adaptador de transporte y Tkinter dentro del proceso
+de la UI debe realizarse mediante:
 
-queue.Queue
+`queue.Queue` (local al proceso; no IPC).
+
+La comunicación entre procesos usa las colas `multiprocessing.Queue` del
+controlador y mensajes validados del protocolo en `simulation/ipc_protocol.py`.
 
 Los eventos usan el dataclass inmutable compartido `ParkingEvent`, definido
 en `core/events.py`:
@@ -128,6 +149,9 @@ ParkingEvent(
     vehicle_id: int | None = None,
     space_id: int | None = None,
     waiting_time: float | None = None,
+    plate: str | None = None,
+    authorized_space_id: int | None = None,
+    reason: str | None = None,
 )
 ```
 
@@ -138,12 +162,23 @@ VEHICLE_WAITING
 VEHICLE_ENTERED
 VEHICLE_EXITED
 VEHICLE_FINISHED
+VEHICLE_REJECTED
+VEHICLE_CANCELLED
 SIMULATION_STARTED
 SIMULATION_FINISHED
 
 Core es responsable de los eventos del ciclo de vida de vehículos.
 `Simulator` es responsable de `SIMULATION_STARTED` y
 `SIMULATION_FINISHED`. Los campos opcionales se informan cuando corresponda.
+Los tres campos nuevos se agregan después de los cinco originales, preservando
+compatibilidad posicional. CREATED solo corresponde a solicitudes aceptadas;
+REJECTED lleva el motivo estable y no produce estado activo. CANCELLED termina
+una solicitud aceptada aún en espera por `STOP_REQUESTED`, no es FINISHED.
+FINISHED solo representa finalización normal tras estacionamiento. `space_id`
+significa puesto ocupado/liberado físicamente; `authorized_space_id` puede
+estar disponible antes de ocuparlo. Core publica sus terminales antes de que
+Simulator envíe SIMULATION_FINISHED. Métricas cuentan REJECTED, FINISHED y
+CANCELLED desde sus respectivos eventos.
 
 No cambiar nombres de campos o tipos de eventos sin coordinarlo con
 los otros módulos.
@@ -154,9 +189,23 @@ los otros módulos.
 
 ### Threads
 
-Cada vehículo debe ejecutarse como un Thread independiente.
+El proceso de motor ejecuta `ParkingLot`, que usa dos hilos orientados a tareas
+por ejecución: admisión y vencimientos/salidas. `Simulator` conserva un hilo
+productor; el padre usa un hilo de transporte para atender IPC sin bloquear
+Tkinter. No agregar hilos por vehículo ni ubicar esperas de admisión o
+permanencia dentro de una solicitud. La separación funcional actual no implica
+que cada vehículo tenga su propio hilo o proceso.
 
-No crear hilos únicamente para animaciones o elementos gráficos.
+La política aprobada por el responsable del proyecto es FIFO entre solicitudes
+elegibles, con FIFO estricto por puesto autorizado. Si el puesto del más antiguo
+está ocupado, puede ingresar una solicitud posterior para otro puesto libre,
+sin reasignar puestos. Al liberarse el puesto bloqueado, tiene prioridad la
+solicitud más antigua que espera ese mismo recurso y continúa elegible.
+Esto evita bloqueo global innecesario y preserva el orden entre competidores
+por el mismo recurso; no es FIFO global estricto ni requiere otra autorización
+de la profesora. El orden de llegada es el de aceptación bajo el Lock, no el
+inicio de llamadas concurrentes a `admit`. No se garantiza un tiempo máximo de
+espera si el recurso no se libera; el cierre temprano cancela pendientes.
 
 ### Semaphore
 
@@ -168,9 +217,9 @@ Ejemplo conceptual:
 
 Semaphore(capacidad_del_parqueadero)
 
-Cuando no existan espacios disponibles, el hilo del vehículo espera por el
-Semaphore hasta que se libere un recurso. La admisión iniciada por el
-llamador no debe dormir ni bloquear esperando un espacio.
+El permiso del `Semaphore` se adquiere únicamente al confirmar ocupación y se
+libera al salir. Las solicitudes en espera no retienen permisos; `Lock` y
+`Condition` protegen transiciones y coordinan trabajadores sin sondeo activo.
 
 ### Lock
 
@@ -183,7 +232,8 @@ Ejemplos:
 
 - Lista de espacios ocupados.
 - Asignación de puestos.
-- Contadores compartidos.
+- Registros de vehículos/placas activas y transiciones de estado.
+- Contadores y estadísticas compartidas.
 - Estadísticas concurrentes.
 
 ### Queue
@@ -202,7 +252,7 @@ La interfaz consume esos eventos.
 
 Tkinter debe ejecutarse únicamente en el hilo principal.
 
-Nunca hacer esto desde un hilo de vehículo:
+Nunca hacer esto desde un hilo trabajador (incluidos los hilos de tareas):
 
 label.config(...)
 canvas.create_rectangle(...)
@@ -215,9 +265,9 @@ La interfaz debe consultar periódicamente la cola mediante:
 
 root.after(...)
 
-Arquitectura correcta:
+Flujo actual:
 
-Vehicle Thread
+Task worker
       ↓
 queue.put(event)
       ↓
@@ -238,19 +288,21 @@ WAITING
 PARKED
 FINISHED
 
-Interpretación respecto a Sistemas Operativos:
+Son estados del ciclo de vida del vehículo, no estados de un hilo específico.
+En el runtime actual son estados del dato `Vehicle`; los hilos de tareas del
+parqueadero ejecutan transiciones sin representar un vehículo individual.
 
 CREATED
-    El hilo ha sido creado.
+    La solicitud del vehículo fue creada.
 
 WAITING
-    El hilo espera un recurso.
+    La solicitud espera un recurso.
 
 PARKED
-    El hilo obtuvo el recurso.
+    El vehículo obtuvo el puesto.
 
 FINISHED
-    El hilo terminó su ejecución.
+    El ciclo de vida del vehículo terminó.
 
 Estos estados pueden ampliarse si el equipo lo considera necesario,
 pero no deben eliminarse sin acuerdo.
@@ -311,46 +363,74 @@ main.py será el punto de composición de los módulos.
 
 Debe contener poca lógica.
 
-`main.py` lee la capacidad desde `simulation/config.py` y compone la cola,
-`ParkingLot`, `Simulator` y la UI. Ejemplo conceptual:
+`main.py` lee configuración y autorizaciones, crea una sola cola local para la
+UI, inicia `MultiprocessController` y conecta `MultiprocessGUIAdapter` con
+`ParkingApp`. La fábrica de recursos por ejecución se ejecuta en el proceso de
+motor, no en `main.py`:
 
-event_queue = Queue()
-
-parking = ParkingLot(capacity=PARKING_CAPACITY, event_queue=event_queue)
-
-simulator = Simulator(
-    parking=parking
-)
-
-app = ParkingApp(
-    event_queue=event_queue,
-    simulator=simulator
-)
-
+ui_queue = Queue()  # Queue local del proceso de la UI, no IPC
+controller = MultiprocessController(PARKING_CAPACITY, audit=audit)
+adapter = MultiprocessGUIAdapter(controller, ui_queue, payload_factory)
+adapter.start_engine()  # inicia el hilo de transporte; este inicia el controlador y el motor de forma asíncrona
+app = ParkingApp(event_queue=ui_queue, simulator=adapter,
+                 capacity=PARKING_CAPACITY)
 app.run()
+
+`main.py` valida el registro JSON y lo incluye, junto con la configuración y
+secuencia ordenada de patentes, en el payload START. El controlador valida el
+payload y envía comandos por IPC. El proceso de motor construye un registro
+inmutable, una instancia de métricas y, mediante `run_factory`, un `ParkingLot`
+y su cola reenviadora para cada ejecución. Core/Simulator publican eventos al
+adaptador de publicación del proceso de motor; el proceso padre los valida,
+audita y el adaptador los proyecta a la cola local de la UI. La UI solicita
+inicio/detención mediante el adaptador y no administra procesos, hilos de core
+ni espacios. El informe final corresponde a las métricas de la última
+ejecución. El contrato `ParkingEvent` no incluye `run_id`; este viaja en el
+envoltorio IPC. La persistencia en base de datos está fuera del alcance actual
+del proyecto, de acuerdo con §16.
 
 La lógica específica debe permanecer en su módulo correspondiente.
 
-### API pública mínima de core
+### API pública mínima de core (runtime actual)
 
-- `Vehicle(Thread)` recibe `vehicle_id`, `parking` y `parking_duration`.
-  `ParkingLot` registra, admite e inicia el hilo; el vehículo coordina su
-  ciclo de vida mediante `ParkingLot`.
-- `ParkingLot(capacity: int, event_queue: Queue)` expone
-  `admit(vehicle: Vehicle) -> bool`, `snapshot() -> ParkingSnapshot` y
-  `close(wait: bool = True) -> None`.
-- `admit` devuelve `True` si el vehículo fue aceptado e iniciado, no si
-  obtuvo un espacio inmediatamente. La espera y los eventos correspondientes
-  ocurren dentro del vehículo.
+- `Vehicle` contiene `vehicle_id`, patente, duración y estado; no es un hilo.
+- `ParkingLot(capacity, event_queue, authorization_registry)` expone
+  `start()`, `admit(vehicle) -> AdmissionResult`, `snapshot()` y `close()`.
+- `admit` valida, resuelve autorización, rechaza duplicados activos y encola
+  de forma síncrona; aceptado significa activo/en cola, no estacionado.
+- `AdmissionResult` conserva el identificador y la referencia de solicitud
+  aceptada, o uno de los motivos estables de rechazo.
 - `ParkingSnapshot` es una lectura inmutable/copiada con `capacity`,
   `occupied_count`, `waiting_count` y `occupied_spaces`, una tupla de pares
   `(space_id, vehicle_id)`. No expone estructuras mutables internas.
-- `close` rechaza nuevas admisiones, cancela vehículos que esperan y permite
-  terminar a los ya estacionados. Con `wait=True`, espera a que terminen los
-  hilos activos. No se terminan hilos a la fuerza; la política requiere
-  sincronización interna.
+- El cierre temprano cancela solicitudes en espera y permite terminar las
+  estacionadas. El cierre natural drena las aceptadas. `wait=True` une ambos
+  trabajadores y no termina hilos a la fuerza.
+- El primer `close` elige drenaje o cancelación; posteriores solicitudes de Stop
+  pueden escalar un drenaje natural a cancelación de pendientes bajo la misma
+  Condition. Una cancelación ya solicitada no puede volver a drenaje, aunque
+  llegue un `close(cancel_pending=False)` atrasado. No se reabren admisiones.
 - La UI consume eventos de la cola. Si lee un snapshot, lo hace solo como
   consulta segura, nunca para alterar el estado del core.
+
+### Arquitectura de admisión y autorización
+
+La arquitectura implementada mantiene FIFO por elegibilidad y FIFO estricto
+entre solicitudes del mismo puesto autorizado. Solicitudes bloqueadas para un
+puesto no impiden progreso en otro puesto elegible.
+
+Esta política es el criterio de diseño aprobado. Su contrato y evidencia de
+pruebas están en `openspec/specs/parking-capacity/spec.md`; el estado de una
+revisión administrativa no determina por sí solo la corrección del algoritmo.
+
+El dominio de autorizaciones está definido en `simulation/authorizations.py`.
+El JSON se valida completo antes de iniciar los trabajadores y se entrega a
+core como registro inmutable. El orden de la secuencia del Simulator determina
+las llegadas; el orden del JSON no determina la generación.
+
+`ParkingLot` resuelve el puesto desde el registro inmutable. `AdmissionResult`
+incluye aceptado/rechazado y el motivo estable (`UNKNOWN_PLATE`,
+`NOT_AUTHORIZED`, `DUPLICATE_ACTIVE`, `LOT_CLOSED` o `INVALID_REQUEST`).
 
 ---
 
@@ -492,18 +572,76 @@ Semaphore o Lock, ya que son parte fundamental del objetivo académico.
 
 ---
 
-## 16. Database documentation requirements
+## 16. Database scope
 
-- Use SQLite as the local SQL database engine.
-- Include sample vehicle records so SQL queries can be demonstrated.
-- Persist one parking movement/visit record per parking session, including
-  its entry and exit times.
-- Keep sample seed records distinguishable from data created during a program
-  run; do not treat sample records as runtime-generated records.
-- Preserve the existing module boundaries: the UI must not perform database
-  work or control vehicle threads, and worker threads must not update Tkinter.
-- The database ownership, integration point, and synchronization approach are
-  not specified here. Agree on them before assigning persistence
-  responsibility or changing shared module contracts.
-- Keep this educational application simple and explainable. Do not add
-  unconfirmed database features, fields, migrations, or abstraction layers.
+SQLite persistence is explicitly excluded from the current project scope.
+Do not add a database, seed records, persistence fields, or database
+abstractions unless the team separately authorizes a scope change.
+
+## 17. Registro de auditoría
+
+- El proceso padre es dueño de una sesión con `QueueHandler`, `QueueListener`
+  y un archivo UTF-8 único bajo `logs/`. Esta cola de logging es distinta de
+  la cola local de eventos Tk y de las colas multiprocessing de IPC.
+- El proceso hijo no abre un archivo: reenvía ciertos registros de operación
+  y error por IPC. El padre valida secuencias y escribe esos registros; los
+  eventos se registran una sola vez al procesar el envoltorio IPC. Cada
+  ejecución tiene `run_id`, sin añadirlo a `ParkingEvent`.
+- Los requisitos académicos de trazabilidad contemplan solicitudes,
+  validaciones, decisiones, entradas, salidas, esperas y errores, con marcas de
+  tiempo y contexto de proceso/hilo. Estos requisitos deben distinguirse de lo
+  que el runtime registra actualmente; la cobertura no está completamente
+  verificada.
+- El registro persistido agrega `waiting_time`, `result` y `error_summary`
+  después de los campos históricos. `waiting_time` en ENTERED mide segundos
+  desde la aceptación en cola hasta la ocupación física. `result` resume el
+  resultado canónico del evento. El resumen de excepción del hijo no es un
+  traceback; las excepciones reales del padre conservan su traceback.
+- El cierre confirma drenaje mediante una barrera y detiene el listener tras
+  el cierre del motor. Fallos de escritura, colas, transporte o confirmación
+  marcan la auditoría incompleta e informan por stderr; no garantizan
+  persistencia ante fallos.
+- El hook temporal de excepciones conserva y delega al hook anterior. El
+  registro diagnostica errores, no recupera ni repara el motor.
+
+La auditoría actual cruza procesos hacia un único escritor padre: se transmiten
+eventos y ciertos registros de auditoría, no todo el logging. Los intentos del
+Simulator se correlacionan con resultados canónicos por ejecución y vehículo;
+CREATED acredita aceptación validada, no ocupación. No se registran todas las
+comprobaciones internas ni decisiones de selección FIFO por separado.
+ENTERED persiste `waiting_time` en segundos desde la aceptación en cola hasta
+la ocupación; WAITING es una observación opcional, no el inicio exacto de toda
+espera. Los campos `result`, `waiting_time` y `error_summary` se anexan al formato
+previo; errores resumidos del hijo no ocupan `traceback`. No cambiar contratos
+de eventos/IPC para añadir estos datos ya disponibles. `origin_*` identifica al
+productor, mientras `processName`/`threadName` identifica recepción/registro
+padre, no el listener. Confirmación y cierre técnico de auditoría no certifican
+cobertura académica ni persistencia ante caídas. Proteger datos sensibles y no
+añadir escritores independientes; ver `openspec/specs/parking-events/spec.md`.
+
+## 18. Protocolo de trabajo y decisiones académicas pendientes
+
+- Diagnosticar el comportamiento actual antes de proponer cambios. Indicar el
+  requisito incumplido y el contrato/módulo afectado; aplicar el cambio mínimo
+  justificado académicamente y evitar refactorizaciones ajenas sin evidencia.
+- Elegir pruebas unitarias, de integración, concurrencia y ciclo de vida
+  apropiadas al cambio. Distinguir inspección estática, pruebas realmente
+  ejecutadas, hipótesis y conclusiones verificadas. Que las pruebas pasen no
+  demuestra por sí solo la ausencia de carreras o interbloqueos.
+- Priorizar corrección académica por encima de estética.
+- No modificar ramas personales cuyo nombre termine en `_edwd3v`, ni
+  reincorporar el experimento descartado `fde3a8e`. Sin autorización, no hacer
+  merge, push, force-push, reset destructivo, borrar ramas ni descartar cambios.
+  Los archivos locales no prueban qué código está publicado en GitHub.
+- Multiprocessing e IPC están implementados mediante un proceso de motor
+  `spawn`, colas IPC con mensajes validados y un adaptador de transporte en el
+  padre; el proceso de motor posee el estado de core. Mantener esta separación
+  y no confundir la `queue.Queue` local de Tk con IPC. La conformidad académica
+  integral aún requiere validación. La política FIFO entre elegibles y por puesto
+  ya fue aprobada por el responsable del proyecto. No cambiar unilateralmente el
+  contrato `ParkingEvent` ni las APIs públicas. El logging hijo-padre tiene un
+  escritor padre, pero su cobertura debe verificarse contra los requisitos de
+  trazabilidad, no darse por completa.
+- Los requisitos de procesos reales no convierten en obligatorio el diseño de
+  sesiones de usuario concurrentes; esa posibilidad fue solo sugerida para
+  estudio.

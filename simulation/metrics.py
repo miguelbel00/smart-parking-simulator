@@ -1,62 +1,197 @@
-"""Thread-safe simulation-level metrics.
+"""Simulation metrics collection."""
 
-Lifecycle details emitted by core stay in the shared UI queue. Metrics do not
-consume that queue: processed means accepted by ``ParkingLot.admit`` and
-waiting/occupancy peaks are safe snapshot observations, not event-level exact
-peaks. Core does not expose per-vehicle wait data except through its events.
-"""
+from __future__ import annotations
 
-from dataclasses import dataclass
-from threading import Lock
+import multiprocessing
+import os
+from threading import Lock, current_thread
+from typing import TYPE_CHECKING, Any
 
+from core.events import (
+    SIMULATION_FINISHED,
+    SIMULATION_STARTED,
+    VEHICLE_ENTERED,
+    VEHICLE_CANCELLED,
+    VEHICLE_EXITED,
+    VEHICLE_FINISHED,
+    VEHICLE_WAITING,
+    VEHICLE_REJECTED,
+)
 
-@dataclass(frozen=True)
-class MetricsSnapshot:
-    created: int
-    processed: int
-    average_wait: float
-    peak_waiting: int
-    peak_occupancy: int
+if TYPE_CHECKING:
+    from queue import Queue
 
 
 class SimulationMetrics:
-    """Collect admission counters and peaks observed through public snapshots."""
+    """Thread-safe aggregation of parking events into final statistics.
+
+    Vehicle threads and the Simulator publish events concurrently, so every
+    counter is protected by a Lock, consistent with the project's rule that
+    concurrent statistics are shared state (AGENTS.md section 5).
+    """
 
     def __init__(self) -> None:
         self._lock = Lock()
-        self._created = 0
-        self._processed = 0
-        self._total_waiting_time = 0.0
-        self._waiting_time_samples = 0
+        self._generated = 0
+        self._admitted = 0
+        self._rejected = 0
+        self._finished = 0
+        self._parked = 0
+        self._cancelled = 0
+        self._entered_vehicle_ids: set[int] = set()
+        self._waiting_times: list[float] = []
+        self._parking_started_at: dict[int, float] = {}
+        self._parking_durations: list[float] = []
+        self._started_at: float | None = None
+        self._finished_at: float | None = None
+        self._currently_waiting: set[int] = set()
+        self._currently_parked: set[int] = set()
         self._peak_waiting = 0
         self._peak_occupancy = 0
 
-    def record_created(self) -> None:
+    def record_generated(self) -> None:
         with self._lock:
-            self._created += 1
+            self._generated += 1
 
-    def record_waiting_time(self, waiting_time: float) -> None:
+    def record_admitted(self) -> None:
         with self._lock:
-            self._total_waiting_time += waiting_time
-            self._waiting_time_samples += 1
+            self._admitted += 1
 
-    def record_admission(self, accepted: bool, parking_snapshot: object) -> None:
+    def record_rejected(self) -> None:
         with self._lock:
-            if accepted:
-                self._processed += 1
-            self._peak_waiting = max(self._peak_waiting, parking_snapshot.waiting_count)
-            self._peak_occupancy = max(self._peak_occupancy, parking_snapshot.occupied_count)
+            self._rejected += 1
 
-    def snapshot(self) -> MetricsSnapshot:
+    def record_event(self, event: Any) -> None:
+        """Fold one ParkingEvent published by core or the Simulator."""
         with self._lock:
-            return MetricsSnapshot(
-                created=self._created,
-                processed=self._processed,
-                average_wait=(
-                    self._total_waiting_time / self._waiting_time_samples
-                    if self._waiting_time_samples
-                    else 0.0
-                ),
-                peak_waiting=self._peak_waiting,
-                peak_occupancy=self._peak_occupancy,
+            if event.type == VEHICLE_WAITING:
+                if event.vehicle_id is not None:
+                    self._currently_waiting.add(event.vehicle_id)
+                    self._peak_waiting = max(self._peak_waiting, len(self._currently_waiting))
+            elif event.type == VEHICLE_REJECTED:
+                self._rejected += 1
+            elif event.type == VEHICLE_ENTERED:
+                if event.waiting_time is not None:
+                    self._waiting_times.append(event.waiting_time)
+                if event.vehicle_id is not None:
+                    self._parked += 1
+                    self._entered_vehicle_ids.add(event.vehicle_id)
+                    self._currently_waiting.discard(event.vehicle_id)
+                    self._parking_started_at[event.vehicle_id] = event.timestamp
+                    self._currently_parked.add(event.vehicle_id)
+                    self._peak_occupancy = max(self._peak_occupancy, len(self._currently_parked))
+            elif event.type == VEHICLE_EXITED:
+                self._currently_parked.discard(event.vehicle_id)
+                started_at = self._parking_started_at.pop(event.vehicle_id, None)
+                if started_at is not None:
+                    self._parking_durations.append(event.timestamp - started_at)
+            elif event.type == VEHICLE_FINISHED:
+                self._finished += 1
+                self._currently_waiting.discard(event.vehicle_id)
+            elif event.type == VEHICLE_CANCELLED:
+                self._cancelled += 1
+                self._currently_waiting.discard(event.vehicle_id)
+            elif event.type == SIMULATION_STARTED:
+                self._started_at = event.timestamp
+            elif event.type == SIMULATION_FINISHED:
+                self._finished_at = event.timestamp
+
+    def snapshot(self) -> dict[str, float | int | None]:
+        """Point-in-time copy of the collected statistics."""
+        with self._lock:
+            duration = (
+                self._finished_at - self._started_at
+                if self._started_at is not None and self._finished_at is not None
+                else None
             )
+            return {
+                "total_generated": self._generated,
+                "total_admitted": self._admitted,
+                "total_rejected": self._rejected,
+                "total_parked": self._parked,
+                "total_finished": self._finished,
+                "total_cancelled": self._cancelled,
+                "currently_parked": len(self._currently_parked),
+                "average_waiting_time": _average(self._waiting_times),
+                "average_parking_time": _average(self._parking_durations),
+                "peak_waiting": self._peak_waiting,
+                "peak_occupancy": self._peak_occupancy,
+                "total_duration": duration,
+            }
+
+    def report(self) -> str:
+        """Human-readable final statistics block."""
+        stats = self.snapshot()
+        duration = stats["total_duration"]
+        duration_line = f"{duration:.2f}s" if duration is not None else "N/D"
+        return (
+            "--- Estadísticas finales de la simulación ---\n"
+            f"Vehículos generados:                {stats['total_generated']}\n"
+            f"Vehículos admitidos:                 {stats['total_admitted']}\n"
+            f"Vehículos rechazados:                {stats['total_rejected']}\n"
+            f"Vehículos estacionados:               {stats['total_parked']}\n"
+            f"Vehículos que finalizaron su ciclo:  {stats['total_finished']}\n"
+            f"Vehículos cancelados:                 {stats['total_cancelled']}\n"
+            f"Tiempo de espera promedio:           {stats['average_waiting_time']:.2f}s\n"
+            f"Tiempo de estacionamiento promedio:  {stats['average_parking_time']:.2f}s\n"
+            f"Máximo de vehículos en espera:        {stats['peak_waiting']}\n"
+            f"Máxima ocupación alcanzada:           {stats['peak_occupancy']}\n"
+            f"Duración total de la simulación:     {duration_line}\n"
+        )
+
+
+class MetricsForwardingQueue:
+    """Queue-like object handed to `ParkingLot` and `Simulator` as their
+    shared `event_queue`.
+
+    `ParkingLot` only ever calls `put()` on its event queue, and the UI is
+    the exclusive consumer draining it via `get_nowait()`. This object sits
+    between the two: it forwards every event to the real UI queue unchanged
+    and folds it into `SimulationMetrics` on the way, so metrics collection
+    never competes with the UI for the same events.
+    """
+
+    def __init__(self, destination: Queue, metrics: SimulationMetrics) -> None:
+        self._destination = destination
+        self._metrics = metrics
+        self._publish_lock = Lock()
+        self._audit = None
+        self._run_id: str | None = None
+
+    def set_audit_context(self, audit, run_id: str) -> None:
+        self._audit = audit
+        self._run_id = run_id
+
+    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
+        # Direct Simulator events are generated and published on this caller.
+        self._put(item, block, timeout, _current_origin())
+
+    def put_with_origin(self, item: Any, origin: dict[str, Any],
+                        block: bool = True, timeout: float | None = None) -> None:
+        """Forward private core provenance without changing the event object."""
+        self._put(item, block, timeout, origin)
+
+    def _put(self, item: Any, block: bool, timeout: float | None,
+             origin: dict[str, Any] | None) -> None:
+        with self._publish_lock:
+            self._metrics.record_event(item)
+            put_with_origin = getattr(self._destination, "put_with_origin", None)
+            if origin is not None and callable(put_with_origin):
+                put_with_origin(item, origin, block=block, timeout=timeout)
+            else:
+                self._destination.put(item, block=block, timeout=timeout)
+            if self._audit is not None and self._run_id is not None:
+                audit_origin = ({"origin_process_id": origin["process_id"],
+                                 "origin_process_name": origin["process_name"],
+                                 "origin_thread_name": origin["thread_name"]}
+                                if origin is not None else None)
+                self._audit.event(item, self._run_id, origin=audit_origin)
+
+
+def _current_origin() -> dict[str, Any]:
+    return {"process_id": os.getpid(), "process_name": multiprocessing.current_process().name,
+            "thread_name": current_thread().name}
+
+
+def _average(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0

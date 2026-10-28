@@ -1,0 +1,9 @@
+{
+  "vehicles": [
+    {"plate": "SAT-A", "authorized": true, "space_id": 0},
+    {"plate": "SAT-B", "authorized": true, "space_id": 1},
+    {"plate": "SAT-C", "authorized": true, "space_id": 2},
+    {"plate": "SAT-D", "authorized": true, "space_id": 0},
+    {"plate": "SAT-E", "authorized": true, "space_id": 1}
+  ]
+}
