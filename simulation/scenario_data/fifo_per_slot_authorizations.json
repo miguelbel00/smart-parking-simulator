@@ -1,0 +1,8 @@
+{
+  "vehicles": [
+    {"plate": "FIFO-A", "authorized": true, "space_id": 0},
+    {"plate": "FIFO-B", "authorized": true, "space_id": 0},
+    {"plate": "FIFO-C", "authorized": true, "space_id": 1},
+    {"plate": "FIFO-D", "authorized": true, "space_id": 0}
+  ]
+}

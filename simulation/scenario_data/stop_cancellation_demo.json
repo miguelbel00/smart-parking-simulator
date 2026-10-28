@@ -1,0 +1,4 @@
+{"vehicles": [
+  {"plate": "STOP-A", "authorized": true, "space_id": 0},
+  {"plate": "STOP-B", "authorized": true, "space_id": 0}
+]}
