@@ -379,10 +379,8 @@ class MultiprocessController:
             if message.get("kind") == "event":
                 # Process audit effects now and retain the event for public get().
                 self._handle_event(message)
-                self._pending.append(message)
             elif message.get("kind") == "audit":
                 self._handle_audit(message)
-                self._pending.append(message)
             if message.get("kind") == "reply" and message["request_id"] == request["request_id"]:
                 if message["command"] != name or message["run_id"] != run_id:
                     raise RuntimeError("engine reply correlation mismatch")

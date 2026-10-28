@@ -27,6 +27,62 @@ def payload():
     }
 
 
+def test_start_pre_reply_messages_have_one_public_delivery():
+    from core.events import ParkingEvent
+    from simulation.multiprocess import _reply
+
+    controller = MultiprocessController(capacity=1)
+    controller._commands = Queue()
+    controller._output = Queue()
+    publisher = _Publisher(controller._output, "single-delivery")
+    publisher.put(ParkingEvent("SIMULATION_STARTED", 1.0))
+    publisher.audit("REQUEST", {"operation": "admission"}, timestamp=2.0)
+    publisher.put(ParkingEvent("SIMULATION_FINISHED", 3.0))
+    expected = [controller._output.get_nowait() for _ in range(3)]
+    for message in expected:
+        controller._output.put(message)
+    controller._output.put(_reply({"name": "START", "run_id": "single-delivery",
+                                  "request_id": "req-1"}, "accepted"))
+
+    assert controller.start(payload(), run_id="single-delivery") == "single-delivery"
+    assert [controller.get(block=False) for _ in expected] == expected
+    with pytest.raises(Empty):
+        controller.get(block=False)
+
+
+@pytest.mark.parametrize("command", ["START", "STOP", "SHUTDOWN"])
+@pytest.mark.parametrize("buffered_reply", [False, True])
+def test_command_correlates_reply_without_rebuffering_messages(command, buffered_reply):
+    from core.events import ParkingEvent
+    from simulation.multiprocess import _reply
+
+    controller = MultiprocessController(capacity=1)
+    controller._commands = Queue()
+    controller._output = Queue()
+    run_id = None if command == "SHUTDOWN" else "single-delivery"
+    reply = _reply({"name": command, "run_id": run_id,
+                    "request_id": "req-1"}, "accepted")
+    unrelated = _reply({"name": "STOP", "run_id": "earlier",
+                        "request_id": "req-earlier"}, "accepted")
+    event = parking_event_to_message(
+        ParkingEvent("SIMULATION_STARTED", 1.0), "single-delivery", 0)
+    controller._pending.append(unrelated)
+    if buffered_reply:
+        controller._pending.append(reply)
+    else:
+        controller._output.put(event)
+        controller._output.put(reply)
+
+    assert controller._command(command, run_id,
+                               payload() if command == "START" else None) == reply
+    expected = [unrelated] + ([] if buffered_reply else [event])
+    if command == "SHUTDOWN":
+        expected.append(reply)
+    assert [controller.get(block=False) for _ in expected] == expected
+    with pytest.raises(Empty):
+        controller.get(block=False)
+
+
 def _raise_from_child_producer(output_queue, producer_entered, test_payload):
     from simulation import config
     from core.parking import ParkingLot
