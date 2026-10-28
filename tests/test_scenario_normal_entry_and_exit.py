@@ -1,10 +1,7 @@
-"""Behavioral proof for the normal_entry_and_exit academic scenario.
+"""Behavioral proof for the normal_entry_and_exit scenario.
 
-Baseline, in-process only: one authorized vehicle, no contention, no
-rejection, a natural finish. Contrasts against the other scenarios by
-showing the simplest possible real Core run. Nothing here simulates or
-re-implements an admission or lifecycle decision; events are read from
-the real queue produced by ParkingLot/Simulator.
+The in-process run observes full occupancy, pending requests, and natural
+completion of every authorized vehicle through real Core events.
 """
 
 from queue import Queue
@@ -16,6 +13,7 @@ from core.events import (
     VEHICLE_ENTERED,
     VEHICLE_EXITED,
     VEHICLE_FINISHED,
+    VEHICLE_WAITING,
 )
 from core.parking import ParkingLot
 from simulation import config as simulation_config
@@ -65,19 +63,19 @@ def test_normal_entry_and_exit_in_process(monkeypatch):
     finally:
         simulator.shutdown()
 
-    assert [event.type for event in events] == [
-        SIMULATION_STARTED,
-        VEHICLE_CREATED,
-        VEHICLE_ENTERED,
-        VEHICLE_EXITED,
-        VEHICLE_FINISHED,
-        SIMULATION_FINISHED,
-    ]
+    assert events[0].type == SIMULATION_STARTED
+    assert events[-1].type == SIMULATION_FINISHED
+    assert sum(event.type == VEHICLE_CREATED for event in events) == 30
+    assert sum(event.type == VEHICLE_ENTERED for event in events) == 30
+    assert sum(event.type == VEHICLE_EXITED for event in events) == 30
+    assert sum(event.type == VEHICLE_FINISHED for event in events) == 30
+    assert sum(event.type == VEHICLE_WAITING for event in events) > 0
 
     stats = metrics.snapshot()
-    assert stats["total_generated"] == 1
-    assert stats["total_admitted"] == 1
+    assert stats["total_generated"] == 30
+    assert stats["total_admitted"] == 30
     assert stats["total_rejected"] == 0
-    assert stats["total_parked"] == 1
-    assert stats["total_finished"] == 1
+    assert stats["total_parked"] == 30
+    assert stats["total_finished"] == 30
     assert stats["total_cancelled"] == 0
+    assert stats["peak_occupancy"] == scenario.capacity

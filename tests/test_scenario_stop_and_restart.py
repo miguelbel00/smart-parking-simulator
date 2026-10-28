@@ -96,6 +96,8 @@ def test_stop_early_cancels_pending_and_allows_parked_to_finish():
 
 def test_stop_late_with_nothing_pending_cancels_nothing():
     payload = build_payload("normal_entry_and_exit")
+    payload["plate_sequence"] = payload["plate_sequence"][:1]
+    payload["config"]["total_vehicles"] = 1
     controller = MultiprocessController(payload["config"]["capacity"], context="spawn")
     controller.start_engine()
     try:
@@ -112,7 +114,7 @@ def test_stop_late_with_nothing_pending_cancels_nothing():
     finally:
         controller.shutdown()
 
-    assert stopped, "the single vehicle never entered; scenario timing assumption broke"
+    assert stopped, "the vehicle never entered; scenario timing assumption broke"
     assert sum(event["name"] == VEHICLE_CANCELLED for event in events) == 0
     assert sum(event["name"] == VEHICLE_EXITED for event in events) == 1
     assert sum(event["name"] == VEHICLE_FINISHED for event in events) == 1
@@ -174,7 +176,7 @@ def test_restart_runs_are_independent():
 
     # The same plates are reused verbatim: zero rejections in run 2 proves
     # _active_plates did not leak across runs (a leak would collide on every
-    # plate, since all five were already "active" at the end of run 1 until
+    # plate, since all twelve were already "active" at the end of run 1 until
     # each FINISHED and was discarded).
     assert sum(event["name"] == VEHICLE_REJECTED for event in events_2) == 0
 

@@ -171,6 +171,6 @@ def _assert_capacity_saturation_invariants(events, capacity, entered_plate, ente
     assert concurrent == 0
     assert peak == capacity
 
-    assert sum(event_type(event) == VEHICLE_FINISHED for event in events) == 5
+    assert sum(event_type(event) == VEHICLE_FINISHED for event in events) == 12
     assert sum(event_type(event) == VEHICLE_REJECTED for event in events) == 0
     assert sum(event_type(event) == VEHICLE_CANCELLED for event in events) == 0

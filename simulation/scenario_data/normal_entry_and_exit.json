@@ -1,5 +1,154 @@
 {
   "vehicles": [
-    {"plate": "NORM-A", "authorized": true, "space_id": 0}
+    {
+      "plate": "NORM-001",
+      "authorized": true,
+      "space_id": 0
+    },
+    {
+      "plate": "NORM-002",
+      "authorized": true,
+      "space_id": 1
+    },
+    {
+      "plate": "NORM-003",
+      "authorized": true,
+      "space_id": 2
+    },
+    {
+      "plate": "NORM-004",
+      "authorized": true,
+      "space_id": 3
+    },
+    {
+      "plate": "NORM-005",
+      "authorized": true,
+      "space_id": 4
+    },
+    {
+      "plate": "NORM-006",
+      "authorized": true,
+      "space_id": 5
+    },
+    {
+      "plate": "NORM-007",
+      "authorized": true,
+      "space_id": 6
+    },
+    {
+      "plate": "NORM-008",
+      "authorized": true,
+      "space_id": 7
+    },
+    {
+      "plate": "NORM-009",
+      "authorized": true,
+      "space_id": 8
+    },
+    {
+      "plate": "NORM-010",
+      "authorized": true,
+      "space_id": 9
+    },
+    {
+      "plate": "NORM-011",
+      "authorized": true,
+      "space_id": 0
+    },
+    {
+      "plate": "NORM-012",
+      "authorized": true,
+      "space_id": 1
+    },
+    {
+      "plate": "NORM-013",
+      "authorized": true,
+      "space_id": 2
+    },
+    {
+      "plate": "NORM-014",
+      "authorized": true,
+      "space_id": 3
+    },
+    {
+      "plate": "NORM-015",
+      "authorized": true,
+      "space_id": 4
+    },
+    {
+      "plate": "NORM-016",
+      "authorized": true,
+      "space_id": 5
+    },
+    {
+      "plate": "NORM-017",
+      "authorized": true,
+      "space_id": 6
+    },
+    {
+      "plate": "NORM-018",
+      "authorized": true,
+      "space_id": 7
+    },
+    {
+      "plate": "NORM-019",
+      "authorized": true,
+      "space_id": 8
+    },
+    {
+      "plate": "NORM-020",
+      "authorized": true,
+      "space_id": 9
+    },
+    {
+      "plate": "NORM-021",
+      "authorized": true,
+      "space_id": 0
+    },
+    {
+      "plate": "NORM-022",
+      "authorized": true,
+      "space_id": 1
+    },
+    {
+      "plate": "NORM-023",
+      "authorized": true,
+      "space_id": 2
+    },
+    {
+      "plate": "NORM-024",
+      "authorized": true,
+      "space_id": 3
+    },
+    {
+      "plate": "NORM-025",
+      "authorized": true,
+      "space_id": 4
+    },
+    {
+      "plate": "NORM-026",
+      "authorized": true,
+      "space_id": 5
+    },
+    {
+      "plate": "NORM-027",
+      "authorized": true,
+      "space_id": 6
+    },
+    {
+      "plate": "NORM-028",
+      "authorized": true,
+      "space_id": 7
+    },
+    {
+      "plate": "NORM-029",
+      "authorized": true,
+      "space_id": 8
+    },
+    {
+      "plate": "NORM-030",
+      "authorized": true,
+      "space_id": 9
+    }
   ]
 }

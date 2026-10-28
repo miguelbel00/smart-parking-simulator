@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Mapping
 
 from simulation.authorizations import load_authorizations
+from simulation.config import PARKING_CAPACITY
 
 _SCENARIO_DATA_DIR = Path(__file__).with_name("scenario_data")
 
@@ -52,7 +53,7 @@ FIFO_PER_SLOT = ScenarioDefinition(
         "ocupado), liberacion de recursos y progreso de solicitudes "
         "elegibles."
     ),
-    capacity=2,
+    capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "fifo_per_slot_authorizations.json",
     plate_sequence=("FIFO-A", "FIFO-B", "FIFO-C", "FIFO-D"),
     min_arrival_time=1,
@@ -74,11 +75,14 @@ CAPACITY_SATURATION = ScenarioDefinition(
         "puestos ocupados distintos, y liberacion con avance concurrente "
         "e independiente por puesto cuando cada ocupante termina."
     ),
-    capacity=3,
+    capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "capacity_saturation_authorizations.json",
-    plate_sequence=("SAT-A", "SAT-B", "SAT-C", "SAT-D", "SAT-E"),
-    min_arrival_time=1,
-    max_arrival_time=1,
+    plate_sequence=(
+        "SAT-A", "SAT-B", "SAT-C", "SAT-F", "SAT-G", "SAT-H",
+        "SAT-I", "SAT-J", "SAT-K", "SAT-L", "SAT-D", "SAT-E",
+    ),
+    min_arrival_time=0,
+    max_arrival_time=0,
     min_parking_time=4,
     max_parking_time=4,
     editable_fields=frozenset({
@@ -97,7 +101,7 @@ AUTHORIZATION_REJECTIONS = ScenarioDefinition(
         "solicitud sigue estacionada, todo evaluado por el AuthorizationRegistry "
         "y ParkingLot.admit() reales, sin atajos."
     ),
-    capacity=1,
+    capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "authorization_rejections.json",
     plate_sequence=("REJ-OK", "REJ-DENIED", "REJ-UNKNOWN", "REJ-OK"),
     min_arrival_time=1,
@@ -112,20 +116,20 @@ AUTHORIZATION_REJECTIONS = ScenarioDefinition(
 
 NORMAL_ENTRY_AND_EXIT = ScenarioDefinition(
     name="normal_entry_and_exit",
-    title="Ingreso y salida normales",
+    title="Flujo gradual de 30 vehiculos con espera y salida",
     academic_requirement=(
-        "Linea base sin contencion ni rechazos: una solicitud autorizada "
-        "ingresa de inmediato, permanece el tiempo configurado y finaliza "
-        "su ciclo de forma natural, liberando el puesto y el permiso del "
-        "Semaphore."
+        "Flujo de 30 solicitudes autorizadas con capacidad fija de 10 "
+        "puestos, una llegada por segundo y 12 segundos de permanencia: "
+        "ocupacion completa, solicitudes pendientes visibles y finalizacion "
+        "natural tras liberar puestos, sin rechazos ni cancelaciones."
     ),
-    capacity=1,
+    capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "normal_entry_and_exit.json",
-    plate_sequence=("NORM-A",),
+    plate_sequence=tuple(f"NORM-{number:03d}" for number in range(1, 31)),
     min_arrival_time=1,
     max_arrival_time=1,
-    min_parking_time=2,
-    max_parking_time=2,
+    min_parking_time=12,
+    max_parking_time=12,
     editable_fields=frozenset({
         "min_arrival_time", "max_arrival_time",
         "min_parking_time", "max_parking_time",
@@ -144,7 +148,7 @@ STOP_CANCELLATION_DEMO = ScenarioDefinition(
         "motor mantienen estado, numeracion de vehiculos y metricas "
         "independientes entre si."
     ),
-    capacity=1,
+    capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "stop_cancellation_demo.json",
     plate_sequence=("STOP-A", "STOP-B"),
     min_arrival_time=1,
