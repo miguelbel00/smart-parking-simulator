@@ -826,34 +826,55 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
     app = ParkingApp(event_queue=Queue(), capacity=5)
     try:
         app._dispatch_event(event("SIMULATION_STARTED"))
-        # Vehicle 10 accepted first for space 0 (only CREATED, no WAITING yet)
+        # Vehicle 10 is accepted but has not yet been observed waiting.
         app._dispatch_event(
             event("VEHICLE_CREATED", 10, plate="BBB-010", authorized_space_id=0)
         )
-        # Vehicle 2 accepted second for space 0 (lower ID than 10, to verify acceptance order over ID order)
+        assert app.waiting_lane.grouped_pending() == {}
+        assert app.card_waiting._lbl_value.cget("text") == "0"
+        app._dispatch_event(
+            event("VEHICLE_WAITING", 10, plate="BBB-010", authorized_space_id=0)
+        )
+
+        # Vehicle 2 waits at the same slot; acceptance order is preserved.
         app._dispatch_event(
             event("VEHICLE_CREATED", 2, plate="DDD-002", authorized_space_id=0)
         )
         app._dispatch_event(
             event("VEHICLE_WAITING", 2, plate="DDD-002", authorized_space_id=0)
         )
-        # Vehicle 5 accepted for space 1
+        # Vehicle 5 is created for a free slot, so it is not shown as waiting.
         app._dispatch_event(
             event("VEHICLE_CREATED", 5, plate="EEE-005", authorized_space_id=1)
         )
 
         grouped = app.waiting_lane.grouped_pending()
-        assert grouped == {
-            1: [10, 2],
-            2: [5],
-        }
+        assert grouped == {1: [10, 2]}
         assert app.waiting_lane._plates[10] == "BBB-010"
         assert app.waiting_lane._plates[2] == "DDD-002"
-        assert app.waiting_lane._states[10] == "CREATED"
         assert app.waiting_lane._states[2] == "WAITING"
-        assert app.card_waiting._lbl_value.cget("text") == "3"
+        assert app.card_waiting._lbl_value.cget("text") == "2"
 
-        # When vehicle 10 enters, it disappears from Puesto #1 group
+        group_row = app.waiting_lane._group_rows[1][0]
+        assert app.waiting_lane._group_rows[1][0] is group_row
+        assert len(app.waiting_lane._items_container.winfo_children()) == 2
+        assert "2 en espera" in app.waiting_lane._group_rows[1][2].cget("text")
+
+        for vehicle_id in range(11, 31):
+            app._dispatch_event(
+                event("VEHICLE_CREATED", vehicle_id, plate=f"Q-{vehicle_id}",
+                      authorized_space_id=0)
+            )
+            app._dispatch_event(
+                event("VEHICLE_WAITING", vehicle_id, plate=f"Q-{vehicle_id}",
+                      authorized_space_id=0)
+            )
+        assert len(app.waiting_lane._group_rows) == 1
+        assert app.waiting_lane._group_rows[1][0] is group_row
+        assert len(app.waiting_lane._items_container.winfo_children()) == 2
+        assert "+19 más" in app.waiting_lane._group_rows[1][2].cget("text")
+
+        # When vehicle 10 enters, it leaves the head of Puesto #1's queue.
         app._dispatch_event(
             event(
                 "VEHICLE_ENTERED",
@@ -864,10 +885,9 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
                 waiting_time=0.5,
             )
         )
-        assert app.waiting_lane.grouped_pending() == {
-            1: [2],
-            2: [5],
-        }
+        assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)]}
+        assert app.waiting_lane._group_rows[1][0] is group_row
+        assert len(app.waiting_lane._items_container.winfo_children()) == 2
 
         # When vehicle 5 is cancelled, Puesto #2 group disappears
         app._dispatch_event(
@@ -879,10 +899,8 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
                 reason="STOP_REQUESTED",
             )
         )
-        assert app.waiting_lane.grouped_pending() == {
-            1: [2],
-        }
-        assert app.card_waiting._lbl_value.cget("text") == "1"
+        assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)]}
+        assert app.card_waiting._lbl_value.cget("text") == "21"
     finally:
         app.root.destroy()
 
@@ -1127,17 +1145,22 @@ def test_real_tkinter_mainloop_with_multiprocess_ipc_lifecycle() -> None:
         # Step 1: Start simulation inside real Tkinter event loop
         app.root.after(40, app._start_simulation)
 
-        # Step 2: Request early Stop once on the first run as soon as it is running
+        # Stop in response to the first real request instead of polling a
+        # transient status label that may be skipped under a busy test suite.
         def request_early_stop() -> None:
             if state["stopped_first"]:
                 return
-            if app.control_bar.status_message == "EN EJECUCIÓN":
-                state["stopped_first"] = True
-                app._stop_simulation()
-            else:
-                app.root.after(30, request_early_stop)
+            state["stopped_first"] = True
+            app._stop_simulation()
 
-        app.root.after(80, request_early_stop)
+        original_dispatch = app._dispatch_event
+
+        def dispatch_and_stop_after_creation(event):
+            original_dispatch(event)
+            if not state["stopped_first"] and event.type == "VEHICLE_CREATED":
+                app.root.after_idle(request_early_stop)
+
+        app._dispatch_event = dispatch_and_stop_after_creation
 
         # Step 3: Wait until first run finishes & drains, then trigger a restart and let it finish
         def monitor_lifecycle() -> None:

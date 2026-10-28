@@ -5,29 +5,26 @@ from __future__ import annotations
 import tkinter as tk
 
 from ui.components.theme import (
-    CAR_OCCUPIED_ICON_PATH,
     COLOR_BG_CARD,
     COLOR_BG_PRIMARY,
     COLOR_BORDER,
     COLOR_INFO,
-    COLOR_INFO_BG,
     COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_WAITING,
     COLOR_WAITING_BG,
-    _load_png_icon,
     font_family,
 )
 from ui.projection import ParkingProjection
 
 
 class WaitingQueueWidget(tk.Frame):
-    """Visual panel grouping pending requests by their authorized parking slot.
+    """Compact view of requests currently waiting for their authorized slot.
 
     Reflects the project's actual scheduling policy: FIFO among eligible
-    requests and strict FIFO per authorized slot. Includes accepted requests
-    from `VEHICLE_CREATED` as well as `VEHICLE_WAITING`, in observed acceptance
-    order, without deciding admission or replacing Core logic.
+    requests and strict FIFO per authorized slot. Displays only requests
+    confirmed as waiting, in observed acceptance order, without deciding
+    admission or replacing Core logic.
     """
 
     def __init__(self, parent: tk.Widget, **kwargs) -> None:
@@ -44,8 +41,7 @@ class WaitingQueueWidget(tk.Frame):
         self._plates: dict[int, str] = {}
         self._authorized_slots: dict[int, int | None] = {}
         self._states: dict[int, str] = {}
-        self._img_car = _load_png_icon(self, CAR_OCCUPIED_ICON_PATH, subsample=4)
-
+        self._group_rows: dict[int | None, tuple[tk.Frame, tk.Label, tk.Label]] = {}
         # Top Bar Header
         top_bar = tk.Frame(self, bg=COLOR_BG_CARD)
         top_bar.pack(fill="x")
@@ -112,7 +108,8 @@ class WaitingQueueWidget(tk.Frame):
             fg=COLOR_TEXT_MUTED,
             font=(font_family(self), 9, "italic"),
         )
-        self._lbl_empty.pack(anchor="w", pady=4)
+        self._items_container.grid_columnconfigure(0, weight=1)
+        self._lbl_empty.grid(row=0, column=0, sticky="w", pady=4)
 
     def _on_items_configure(self, _event: tk.Event | None = None) -> None:
         """Update canvas scrollregion and toggle scrollbars when content overflows."""
@@ -163,21 +160,28 @@ class WaitingQueueWidget(tk.Frame):
             self._refresh()
 
     def sync_from_projection(self, projection: ParkingProjection) -> None:
-        """Synchronize pending groups directly from the canonical projection."""
-        self._vehicles = list(projection.pending_order)
-        self._plates.clear()
-        self._authorized_slots.clear()
-        self._states.clear()
-        for vid in self._vehicles:
+        """Synchronize only confirmed waiters from canonical projection state."""
+        vehicles = [vid for vid in projection.pending_order if vid in projection.waiting]
+        plates: dict[int, str] = {}
+        authorized_slots: dict[int, int | None] = {}
+        states: dict[int, str] = {}
+        for vid in vehicles:
             rec = projection.requests.get(vid)
             if rec is not None:
-                self._plates[vid] = rec.plate or f"Auto #{vid}"
-                self._authorized_slots[vid] = rec.authorized_slot
-                self._states[vid] = rec.state
+                plates[vid] = rec.plate or f"Auto #{vid}"
+                authorized_slots[vid] = rec.authorized_slot
+                states[vid] = rec.state
             else:
-                self._plates[vid] = f"Auto #{vid}"
-                self._authorized_slots[vid] = None
-                self._states[vid] = "WAITING"
+                plates[vid] = f"Auto #{vid}"
+                authorized_slots[vid] = None
+                states[vid] = "WAITING"
+        if (vehicles == self._vehicles and plates == self._plates
+                and authorized_slots == self._authorized_slots and states == self._states):
+            return
+        self._vehicles = vehicles
+        self._plates = plates
+        self._authorized_slots = authorized_slots
+        self._states = states
         self._refresh()
 
     def grouped_pending(self) -> dict[int | None, list[int]]:
@@ -197,102 +201,68 @@ class WaitingQueueWidget(tk.Frame):
         self._refresh()
 
     def _refresh(self) -> None:
-        """Re-render pending requests grouped by their authorized parking slot."""
+        """Update a bounded set of per-slot rows without rebuilding the view."""
         count = len(self._vehicles)
         self._lbl_count.config(
             text=f"{count} pendiente{'s' if count != 1 else ''}"
         )
 
-        for child in self._items_container.winfo_children():
-            child.destroy()
+        groups = self.grouped_pending()
+        for slot_key, (row, _, _) in self._group_rows.items():
+            if slot_key not in groups:
+                row.grid_remove()
 
-        if not self._vehicles:
-            self._lbl_empty = tk.Label(
-                self._items_container,
-                text="No hay solicitudes pendientes de ingreso.",
-                bg=COLOR_BG_CARD,
-                fg=COLOR_TEXT_MUTED,
-                font=(font_family(self), 9, "italic"),
-            )
-            self._lbl_empty.pack(anchor="w", pady=4)
+        if not groups:
+            self._lbl_empty.grid()
             self._canvas.xview_moveto(0.0)
             self._canvas.yview_moveto(0.0)
             self._on_items_configure()
             return
 
-        groups = self.grouped_pending()
+        self._lbl_empty.grid_remove()
         # Sort group rows by slot number (1..N, then None) while keeping acceptance order inside each group
         sorted_slots = sorted(
             groups.keys(), key=lambda s: (s is None, s if s is not None else 0)
         )
 
-        for slot_key in sorted_slots:
+        for row_index, slot_key in enumerate(sorted_slots):
             vids = groups[slot_key]
-            group_row = tk.Frame(self._items_container, bg=COLOR_BG_CARD)
-            group_row.pack(fill="x", anchor="w", pady=2)
-
-            slot_label = (
-                f"Puesto #{slot_key}:" if slot_key is not None else "Puesto s/a:"
-            )
-            tk.Label(
-                group_row,
-                text=slot_label,
-                width=11,
-                anchor="w",
-                bg=COLOR_BG_PRIMARY,
-                fg=COLOR_INFO,
-                font=(font_family(self), 8, "bold"),
-                padx=6,
-                pady=3,
-            ).pack(side="left", padx=(0, 6))
-
-            for idx, vid in enumerate(vids):
-                plate_str = self._plates.get(vid, f"Auto #{vid}")
-                slot_tag = f"Puesto #{slot_key}" if slot_key is not None else "—"
-                state_str = self._states.get(vid, "WAITING")
-                badge_bg = COLOR_WAITING_BG if state_str == "WAITING" else COLOR_INFO_BG
-                badge_border = COLOR_WAITING if state_str == "WAITING" else COLOR_INFO
-
-                item = tk.Frame(
+            row_data = self._group_rows.get(slot_key)
+            if row_data is None:
+                group_row = tk.Frame(self._items_container, bg=COLOR_BG_CARD)
+                slot_label = tk.Label(
                     group_row,
-                    bg=badge_bg,
-                    highlightbackground=badge_border,
-                    highlightthickness=1,
+                    text="",
+                    width=11,
+                    anchor="w",
+                    bg=COLOR_BG_PRIMARY,
+                    fg=COLOR_INFO,
+                    font=(font_family(self), 8, "bold"),
                     padx=6,
-                    pady=2,
+                    pady=3,
                 )
-                item.pack(side="left", padx=(0, 4))
+                slot_label.pack(side="left", padx=(0, 6))
+                queue_label = tk.Label(
+                    group_row,
+                    text="",
+                    anchor="w",
+                    bg=COLOR_BG_CARD,
+                    fg=COLOR_TEXT_PRIMARY,
+                    font=(font_family(self), 8),
+                )
+                queue_label.pack(side="left", fill="x", expand=True)
+                row_data = (group_row, slot_label, queue_label)
+                self._group_rows[slot_key] = row_data
 
-                badge_text = f"{plate_str} (#{vid} · {slot_tag})"
-                if self._img_car is not None:
-                    tk.Label(
-                        item,
-                        image=self._img_car,
-                        text=f" {badge_text}",
-                        compound="left",
-                        bg=badge_bg,
-                        fg=COLOR_TEXT_PRIMARY,
-                        font=(font_family(self), 8, "bold"),
-                    ).pack(side="left")
-                else:
-                    tk.Label(
-                        item,
-                        text=badge_text,
-                        bg=badge_bg,
-                        fg=COLOR_TEXT_PRIMARY,
-                        font=(font_family(self), 8, "bold"),
-                    ).pack(side="left")
+            group_row, slot_label, queue_label = row_data
+            slot_label.config(text=f"Puesto #{slot_key}:" if slot_key is not None else "Puesto s/a:")
+            preview = [self._plates.get(vid, f"Auto #{vid}") for vid in vids[:3]]
+            queue_text = f"{len(vids)} en espera: " + " → ".join(preview)
+            if len(vids) > len(preview):
+                queue_text += f" · +{len(vids) - len(preview)} más"
+            queue_label.config(text=queue_text)
+            group_row.grid(row=row_index, column=0, sticky="ew", pady=2)
 
-                if idx < len(vids) - 1:
-                    tk.Label(
-                        group_row,
-                        text="→",
-                        bg=COLOR_BG_CARD,
-                        fg=COLOR_WAITING,
-                        font=(font_family(self), 9, "bold"),
-                    ).pack(side="left", padx=(0, 4))
-
-        self._items_container.update_idletasks()
         self._on_items_configure()
 
 

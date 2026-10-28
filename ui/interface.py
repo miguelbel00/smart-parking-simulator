@@ -556,7 +556,8 @@ class ParkingApp:
 
             # 4. OS Concept: Request waits for an eligible resource (state: WAITING)
             elif event_type == "VEHICLE_WAITING":
-                if vehicle_id is not None:
+                if (vehicle_id is not None
+                        and not hasattr(self.waiting_lane, "sync_from_projection")):
                     self.waiting_lane.add_vehicle(vehicle_id, plate)
                 self._sync_tracking_views(vehicle_id)
                 self._update_display_counters()
@@ -572,7 +573,8 @@ class ParkingApp:
 
             # 5. OS Concept: Request acquired a slot (state: PARKED)
             elif event_type == "VEHICLE_ENTERED":
-                if vehicle_id is not None:
+                if (vehicle_id is not None
+                        and not hasattr(self.waiting_lane, "sync_from_projection")):
                     self.waiting_lane.remove_vehicle(vehicle_id)
                 if slot_key is not None and vehicle_id is not None:
                     self.parking_grid.occupy_slot(slot_key, vehicle_id, vehicle_plate)
@@ -689,7 +691,6 @@ class ParkingApp:
         """Keep cards synchronized with the projected grid and UI-processed events."""
         self.occupied_count = self.projection.occupied_count
         self.waiting_count = len(self.projection.waiting)
-        pending_count = getattr(self.projection, "pending_count", self.waiting_count)
 
         self.card_occupied.update_value(self.occupied_count)
         if hasattr(self.card_occupied, "update_subtitle"):
@@ -699,7 +700,7 @@ class ParkingApp:
         if hasattr(self, "card_available"):
             self.card_available.update_value(self.projection.available_count)
         if hasattr(self, "card_waiting"):
-            self.card_waiting.update_value(pending_count)
+            self.card_waiting.update_value(self.waiting_count)
 
         self.total_finished = self.projection.finished_count
         self.card_finished.update_value(self.total_finished)
