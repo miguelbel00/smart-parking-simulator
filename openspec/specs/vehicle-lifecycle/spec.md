@@ -106,6 +106,13 @@ The Simulator selects `cancel_pending` from whether an early stop was requested:
 - WHEN close returns
 - THEN pending requests have been drained or cancelled according to the close mode, parked requests have completed, and no lot worker remains active
 
+#### Scenario: Stop escalates natural draining
+
+- GIVEN a natural close is draining accepted pending and parked requests
+- WHEN explicit Stop requests cancellation
+- THEN pending requests become CANCELLED exactly once while parked requests finish normally
+- AND a later natural-close call cannot reverse the cancellation
+
 ### Requirement: Process ownership and IPC lifecycle
 
 The spawn engine MUST own the lifecycle state and task-oriented workers.

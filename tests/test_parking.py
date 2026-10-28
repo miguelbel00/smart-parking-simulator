@@ -301,6 +301,63 @@ def test_natural_close_drains_multiple_pending_with_one_terminal_each():
         lot.close()
 
 
+@pytest.mark.parametrize("natural_first", [True, False])
+def test_stop_escalation_cannot_be_downgraded_by_natural_close(natural_first):
+    q = Queue()
+    lot = make_lot(1, [(f"P{i}", True, 0) for i in range(1, 5)], q)
+    lot.start()
+    vehicles = [request(lot, i, f"P{i}", .3) for i in range(1, 4)]
+    try:
+        assert lot.admit(vehicles[0]).accepted
+        until(lambda: lot.snapshot().occupied_count == 1)
+        assert all(lot.admit(vehicle).accepted for vehicle in vehicles[1:])
+        if natural_first:
+            lot.close(wait=False, cancel_pending=False)
+        lot.close(wait=False, cancel_pending=True)
+        # A producer's stale natural close must not undo the explicit Stop.
+        lot.close(wait=True, cancel_pending=False)
+        events = list(q.queue)
+        terminals = [event for event in events
+                     if event.type in (VEHICLE_FINISHED, VEHICLE_CANCELLED)]
+        assert sorted((event.vehicle_id, event.type, event.reason) for event in terminals) == [
+            (1, VEHICLE_FINISHED, None),
+            (2, VEHICLE_CANCELLED, "STOP_REQUESTED"),
+            (3, VEHICLE_CANCELLED, "STOP_REQUESTED"),
+        ]
+        assert [event.vehicle_id for event in events if event.type == VEHICLE_ENTERED] == [1]
+        assert [event.vehicle_id for event in events if event.type == VEHICLE_EXITED] == [1]
+        assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+        before = lot.snapshot()
+        rejected = lot.admit(request(lot, 4, "P4"))
+        assert not rejected.accepted and rejected.reason == "LOT_CLOSED"
+        assert lot.snapshot() == before
+        assert q.queue[-1].type == VEHICLE_REJECTED
+        assert q.queue[-1].reason == "LOT_CLOSED"
+    finally:
+        lot.close()
+
+
+def test_repeated_natural_close_still_drains_accepted_requests():
+    q = Queue()
+    lot = make_lot(1, [(f"P{i}", True, 0) for i in range(1, 4)], q)
+    lot.start()
+    vehicles = [request(lot, i, f"P{i}", .03) for i in range(1, 4)]
+    try:
+        assert lot.admit(vehicles[0]).accepted
+        until(lambda: lot.snapshot().occupied_count == 1)
+        assert all(lot.admit(vehicle).accepted for vehicle in vehicles[1:])
+        lot.close(wait=False, cancel_pending=False)
+        lot.close(wait=True, cancel_pending=False)
+        events = list(q.queue)
+        assert not any(event.type == VEHICLE_CANCELLED for event in events)
+        for kind in (VEHICLE_ENTERED, VEHICLE_EXITED, VEHICLE_FINISHED):
+            assert [event.vehicle_id for event in events if event.type == kind] == [1, 2, 3]
+        assert all(vehicle.state == "FINISHED" for vehicle in vehicles)
+        assert lot.snapshot().occupied_count == lot.snapshot().waiting_count == 0
+    finally:
+        lot.close()
+
+
 def test_invalid_request_and_vehicle_is_not_thread():
     lot = make_lot()
     lot.start()
