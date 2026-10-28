@@ -3,7 +3,14 @@ schema: spec-driven
 context: |
   Python smart parking simulator with a Tkinter UI.
   Architecture separates core concurrency, simulation, and UI; main.py composes them.
-  Vehicle threads communicate with the UI through a shared queue of immutable ParkingEvent values.
+  Current runtime: a spawn engine process owns ParkingLot and Simulator with
+  task-oriented workers. Validated multiprocessing IPC carries commands,
+  events and selected audit records. The parent transport forwards events to
+  the local Tk queue and AuditSession owns the single parent file writer.
+  FIFO among eligible requests with strict per-authorized-slot FIFO is approved;
+  blocked slots do not prevent progress at other free authorized slots.
+  Academic compliance must be assessed against concrete behavior and tests.
+  SQLite is excluded. Audit confirmation means technical drain, not certification.
   Core owns admission, capacity, synchronization, and vehicle lifecycle.
   Generated technical artifacts use English.
   Downstream work pace: automatic. Delivery strategy: auto-chain.
@@ -14,11 +21,11 @@ projects:
   - path: .
     stack: Python 3 / Tkinter (standard library)
     test_command: "python -m pytest"
-    test_framework: pytest 8.3.4 (available in environment; no repository test configuration)
+    test_framework: pytest (repository contains tests; exact installed version not verified in this documentation update)
     test_layers:
-      unit: pytest available; tests/ currently contains no tests
-      integration: not detected
-      e2e: not detected
+      unit: tests/ contains test modules for authorizations, events, parking, lifecycle, simulation, audit logging, UI projection, shutdown, main, and fonts; coverage not verified here
+      integration: present test modules exercise cross-component behavior; exact classification not verified here
+      e2e: not classified in this documentation update
     coverage: not detected
     quality_tools:
       linter: not detected
@@ -27,14 +34,14 @@ projects:
 
 testing:
   strict_tdd: false
-  reason: No explicit workspace-level command covering all projects is configured; the available pytest invocation is project-local and no tests/configuration are currently present.
+  reason: No explicit workspace-level command covering multiple projects is configured; the project-local pytest suite exists. Test coverage and exact layer classification were not verified in this documentation update.
   projects:
     - path: .
       test_command: "python -m pytest"
-      framework: "pytest 8.3.4 (available in environment; no repository test configuration)"
-      unit: "pytest available; tests/ currently contains no tests"
-      integration: "not detected"
-      e2e: "not detected"
+      framework: "pytest; installed version not verified in this documentation update"
+      unit: "tests/ contains unit-oriented test modules; coverage not verified"
+      integration: "cross-component test modules exist; exact classification not verified"
+      e2e: "not classified in this documentation update"
       coverage: "not detected"
       linter: "not detected"
       type_checker: "not detected"

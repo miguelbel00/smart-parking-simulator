@@ -1,144 +1,130 @@
-# Vehicle Lifecycle Specification
+# Vehicle Request Lifecycle Specification
 
 ## Purpose
 
-Define the observable behavior of `Vehicle(Thread)` and the vehicle-facing shutdown semantics of `ParkingLot.close(wait: bool = True)`: each vehicle is an independent execution thread that coordinates its lifecycle through the parking lot, moves through the states CREATED, WAITING, PARKED, FINISHED, and terminates gracefully on close without forced termination. Signatures are preserved from `AGENTS.md`: `Vehicle(Thread)` receives `vehicle_id`, `parking`, `parking_duration`.
-
-Out of scope: admission return values, snapshot contents, and event payload composition (see `parking-capacity` and `parking-events`). The state names here describe observable vehicle behavior; the REQUIRED states are the event-visible minimum defined by the project contract and MUST NOT be removed.
+Define the lifecycle of a vehicle admission request in `ParkingLot`. A `Vehicle` is request data, not an execution thread; the lot's admission and departure workers perform transitions.
 
 ## Requirements
 
-### Requirement: Vehicle threads are independent execution units
+### Requirement: Vehicle is a request, not a thread
 
-The system MUST represent each vehicle as an independent execution thread. Each accepted vehicle MUST run its lifecycle inside its own thread, coordinating state transitions with the `ParkingLot` it was admitted to.
+The system MUST represent each vehicle as a `Vehicle` request object containing its identifier, parking lot, duration, plate, and lifecycle state. `Vehicle` MUST NOT inherit from `Thread` and MUST NOT create a per-vehicle worker. Each parking-lot execution uses its task-oriented admission and departure workers to coordinate requests.
 
-No idle thread may be created solely for animation or UI purposes; this spec covers vehicle threads only.
+#### Scenario: Admission enqueues request data
 
-#### Scenario: Admitted vehicle runs in its own thread
+- GIVEN a started open `ParkingLot` and a valid `Vehicle` request
+- WHEN `admit(vehicle)` accepts it
+- THEN the request is active and queued for processing, but need not yet be parked
+- AND no thread is created for that vehicle
 
-- GIVEN an open `ParkingLot` and a `Vehicle` instance constructed with an identifier, the lot, and a positive `parking_duration`
-- WHEN the vehicle is admitted with `admit(vehicle)`
-- THEN the vehicle's thread is started and the vehicle progresses through its lifecycle states independent of the calling thread
-- AND the vehicle eventually reaches a terminal outcome (finished normally, or cancelled by close) without additional external drive
+### Requirement: Request lifecycle transitions
 
-#### Scenario: Multiple vehicles progress concurrently
+The request lifecycle MUST follow one of these paths:
 
-- GIVEN several vehicles admitted with overlapping parking durations
-- WHEN their threads run concurrently
-- THEN their state transitions are observable independently, and no vehicle's progress depends on another vehicle reaching a terminal state first (beyond ordinary capacity waiting)
+- Rejected admission: received → rejected; it never becomes active.
+- Accepted normal request: accepted/created → waiting (when it cannot enter immediately) → parked → finished.
+- Accepted pending request on early stop: accepted/created → optional waiting → cancelled.
 
-### Requirement: Lifecycle states
+`WAITING`, `PARKED`, `FINISHED`, and `CANCELLED` describe the request data's state, not a vehicle thread. `PARKED` means the request physically holds its authorized space. A cancelled request was accepted but never parked. `FINISHED` means only normal completion after an occupied stay and release; it MUST NOT mean cancellation.
 
-Each accepted vehicle MUST progress through the states CREATED, WAITING, PARKED, FINISHED in that order for a full normal cycle. These states MUST remain representable; no state from this set MAY be removed.
+#### Scenario: Request is rejected without activation
 
-- `CREATED`: the vehicle thread has been created (before or at admission)
-- `WAITING`: the vehicle is waiting for an available space
-- `PARKED`: the thread has acquired a space and holds it for `parking_duration`
-- `FINISHED`: the vehicle thread has terminated its lifecycle (normally, or cancelled by close)
+- GIVEN a request that fails validation, authorization, uniqueness, or open-lot checks
+- WHEN `admit` rejects it
+- THEN the request is not active and does not enter waiting or parked state
+- AND its rejection reason is returned and reported as `VEHICLE_REJECTED`
 
-A vehicle admitted while a space is immediately available SHOULD transition from creation directly to the parked state without a distinct observable waiting period.
+#### Scenario: Accepted request parks and finishes
 
-A vehicle admitted while no space is available MUST transition to the waiting state and MUST NOT become parked until it acquires a space.
+- GIVEN an accepted request and an available authorized space
+- WHEN admission assigns that space and the requested stay completes
+- THEN the request proceeds to PARKED, releases the physical space after its stay, and reaches FINISHED
+- AND its occupied space is not made available before release
 
-#### Scenario: Full cycle with available space
+#### Scenario: Accepted request waits then parks
 
-- GIVEN an open `ParkingLot` with at least one free space
-- WHEN a vehicle with a short `parking_duration` is admitted and allowed to run
-- THEN the vehicle becomes parked promptly after admission, without a preceding waiting interval
-- AND after `parking_duration` elapses, the vehicle exits and finishes
+- GIVEN an accepted request whose authorized space is not available
+- WHEN it waits and that space becomes eligible
+- THEN it remains WAITING until it acquires the authorized space
+- AND after its stay it releases the space and reaches FINISHED
 
-#### Scenario: Full cycle through waiting
+#### Scenario: Early stop cancels a pending request
 
-- GIVEN a full open `ParkingLot`
-- WHEN an additional vehicle is admitted
-- THEN that vehicle is observable in the waiting state before becoming parked
-- AND upon a release it becomes parked, and after its `parking_duration` elapses it exits and finishes
+- GIVEN an accepted request still pending when early close requests cancellation
+- WHEN core cancels pending requests
+- THEN the request transitions from WAITING (or accepted/created if waiting was not yet observable) directly to CANCELLED
+- AND it never becomes PARKED, acquires a space, or reaches FINISHED
+- AND its active-plate membership is released
 
-#### Scenario: No out-of-order lifecycle transitions
+### Requirement: Bounded capacity and exclusive slot ownership
 
-- GIVEN any vehicle in any scenario, including close during contention
-- WHEN its lifecycle is observed via published events or snapshot counters
-- THEN the observed order is CREATED, then optionally WAITING, then PARKED (Enter) only while holding a space, and FINISHED last
-- AND a vehicle MUST never be observed entering after finishing
+The parking lot MUST use a semaphore to enforce configured capacity and synchronization via its lock/condition to protect shared request and slot state. A semaphore permit is acquired only when physical occupancy is committed and released exactly once on exit. Waiting requests MUST NOT hold permits.
 
-### Requirement: Graceful close rejects and cancels appropriately
+Only one request may occupy a physical slot at a time. The project owner's approved policy MUST serve requests in acceptance order among eligible requests, with strict FIFO per authorized slot. If the oldest request's slot is occupied, an eligible request for another free authorized slot MAY proceed. This avoids unnecessary global blocking; it is not strict global FIFO. Arrival means acceptance under the core lock, not concurrent call start time. The active-plate membership MUST prevent duplicate active requests and be released on either normal completion or cancellation. JSON authorization MUST bind a plate to its specific slot; reassignment is forbidden.
 
-When `ParkingLot.close()` is invoked, the system MUST reject all subsequent admission requests (returning `False`), MUST cancel every vehicle currently waiting for a space so that it reaches FINISHED without parking, and MUST allow every vehicle currently parked to complete its parking duration, exit, and finish.
+#### Scenario: Capacity remains bounded
 
-The system MUST NOT forcibly terminate any vehicle thread; every vehicle reaches FINISHED by its own transition.
+- GIVEN concurrent accepted requests competing for a finite-capacity lot
+- WHEN they are admitted, parked, released, or cancelled
+- THEN occupied requests never exceed capacity and no two requests occupy the same slot simultaneously
+- AND each occupied request holds exactly one permit until release
 
-A vehicle cancelled while waiting MUST reach FINISHED without ever reaching the parked state in this shutdown scenario.
+#### Scenario: Slot and plate become available after termination
 
-#### Scenario: Admission rejected after close
+- GIVEN a request occupying a slot or an accepted request cancelled while pending
+- WHEN it completes normally or is cancelled
+- THEN its physical slot (if occupied) and active-plate membership are released exactly once
+- AND a later eligible request may proceed
 
-- GIVEN a `ParkingLot` that has been closed
-- WHEN `admit(vehicle)` is called with a new vehicle
-- THEN `admit` returns `False` promptly
-- AND that vehicle's thread is not started and no space is consumed for it
+### Requirement: Graceful lot close
 
-#### Scenario: Waiter cancelled by close reaches FINISHED without parking
+Close mode is selected on first close and may only escalate toward cancellation
+afterward. Stop during natural draining MUST cancel requests still pending;
+neither repeated calls nor an already-computed natural close may undo Stop.
+Occupancy/cancellation linearizes under the existing condition lock: a request
+already parked finishes normally, otherwise it is cancelled exactly once.
 
-- GIVEN a full closed `ParkingLot` and at least one vehicle in the waiting state
-- WHEN `close` cancels the waiting vehicle
-- THEN that vehicle transitions from WAITING directly to FINISHED
-- AND it never reaches PARKED, acquires no space, and does not alter `occupied_count`
-- AND it does not emit an entry event (see `parking-events` for the exact published sequence)
+`close(wait: bool = True, cancel_pending: bool = True)` MUST mark the lot closed and reject subsequent admissions. `cancel_pending=True` requests cancellation of accepted pending requests while allowing parked requests to complete; `cancel_pending=False` allows accepted pending requests to drain normally. `wait=True` joins started workers and returns only after the selected cancellation/drain behavior completes. `wait=False` does not join workers or guarantee that work has drained on return. Workers MUST NOT be forcibly terminated.
 
-#### Scenario: Repeated close is safe
+The Simulator selects `cancel_pending` from whether an early stop was requested: early stop cancels pending requests, while natural completion drains them. Parked requests complete normally on either path.
 
-- GIVEN a closed `ParkingLot`
-- WHEN `close()` is called again
-- THEN the call is accepted without error and no additional cancellation or state change is required
+#### Scenario: Admission after close is rejected
 
-### Requirement: Parked vehicles complete on close
+- GIVEN a closed lot
+- WHEN a new request is submitted
+- THEN it is rejected promptly and consumes no slot or semaphore permit
 
-On close, each parked vehicle MUST retain its acquired space until it completes. After its `parking_duration` elapses it MUST exit and finish, and its space MUST be released according to `parking-capacity` exclusive-ownership rules.
+#### Scenario: Parked request completes after close
 
-After close and completion of all still-running vehicles, the park MUST eventually converge to `occupied_count = 0` for all accepted vehicles that were still active.
+- GIVEN a request parked when the lot is closed
+- WHEN its stay completes
+- THEN it releases its slot and permit and reaches FINISHED
 
-#### Scenario: Parked vehicle completes and releases normally after close
+#### Scenario: Waiting close does not return before drain
 
-- GIVEN a closed `ParkingLot` where a vehicle is currently parked with a known `parking_duration`
-- WHEN that duration elapses and the vehicle exits
-- THEN the vehicle finishes normally
-- AND its space becomes unoccupied (`occupied_count` decreases by 1)
+- GIVEN accepted pending and parked requests when `close(wait=True)` is called externally
+- WHEN close returns
+- THEN pending requests have been drained or cancelled according to the close mode, parked requests have completed, and no lot worker remains active
 
-### Requirement: close(wait=True) joins active threads
+#### Scenario: Stop escalates natural draining
 
-The system MUST implement `close(wait=True)` such that, when called from a thread other than any vehicle thread, the call returns only after every vehicle admitted before close has reached FINISHED and its thread has terminated.
+- GIVEN a natural close is draining accepted pending and parked requests
+- WHEN explicit Stop requests cancellation
+- THEN pending requests become CANCELLED exactly once while parked requests finish normally
+- AND a later natural-close call cannot reverse the cancellation
 
-After `close(wait=True)` returns, the system MUST leave no vehicle thread still running, waiting, or parked among vehicles admitted before close.
+### Requirement: Process ownership and IPC lifecycle
 
-#### Scenario: wait=True guarantees no active threads
+The spawn engine MUST own the lifecycle state and task-oriented workers.
+Validated multiprocessing queues MUST carry commands, events and selected
+audit records to/from the parent. The parent transport MUST audit received
+events once and project them to the local Tk queue. A local queue alone is not
+IPC. This architecture is implemented; complete academic compliance still
+requires evidence against the applicable requirements.
 
-- GIVEN an open `ParkingLot` with some parked and some waiting vehicles
-- WHEN `close(wait=True)` is called from a non-vehicle thread
-- THEN the call does not return until all previously admitted vehicle threads are no longer alive
-- AND after return, no vehicle thread remains alive or waiting
-- AND the returned lot's occupied state converges to empty over the same period of time that it took to finish
+#### Scenario: Lifecycle terminals reach the parent before completion
 
-#### Scenario: wait=True with no vehicles
-
-- GIVEN a lot with zero previously admitted vehicles
-- WHEN `close(wait=True)` is called
-- THEN the call returns promptly and results in a lot that rejects any admission
-
-### Requirement: Close with wait=False returns promptly
-
-The system MUST implement `close(wait=False)` such that the call returns promptly — without waiting for parked or waiting vehicles to finish — while still rejecting new admissions and cancelling waiters.
-
-The system MUST NOT guarantee that all events have been published or threads joined at the moment `close(wait=False)` returns; the owning caller is responsible for the lifetime of the shared event queue (see `parking-events`).
-
-#### Scenario: wait=False returns while a parked vehicle is still active
-
-- GIVEN an open lot with one vehicle parked whose `parking_duration` has not elapsed
-- WHEN `close(wait=False)` is called
-- THEN the call returns promptly, and that vehicle may still be running at return time
-- AND it validates that new admissions are rejected immediately after the call returns
-
-#### Scenario: wait=False converges later
-
-- GIVEN `close(wait=False)` was called while a vehicle was parked
-- WHEN that vehicle's `parking_duration` elapses
-- THEN the vehicle finishes normally and eventually no vehicle threads remain alive
-- AND its published events stay consistent with the exclusive-ownership and bounded-capacity invariants (see `parking-capacity`)
+- GIVEN accepted requests in a spawned run
+- WHEN the run drains or cancels pending requests
+- THEN terminals cross IPC before normal simulation finish
+- AND confirmed audit drain precedes declaring the audited run successful

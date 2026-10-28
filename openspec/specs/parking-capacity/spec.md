@@ -2,135 +2,230 @@
 
 ## Purpose
 
-Define the observable admission and capacity behavior of `ParkingLot`: asynchronous nonblocking admission of vehicle threads, capacity bounded by a counting gate, exclusive ownership of parking spaces, and immutable consistent snapshots of lot state. This spec preserves the public contract from `AGENTS.md`: `ParkingLot(capacity: int, event_queue: Queue)` exposing `admit(vehicle: Vehicle) -> bool`, `snapshot() -> ParkingSnapshot`, and `close(wait: bool = True) -> None`.
-
-Out of scope: UI rendering, simulation orchestration, `main.py` composition, and the event payload/ordering details covered by `parking-events`.
+Specify the current `ParkingLot` capacity, admission, authorization, and snapshot
+contract within the implemented spawn-engine/validated-IPC architecture.
+Implementation evidence and tests do not alone certify every academic requirement.
 
 ## Requirements
 
-### Requirement: Nonblocking admission
+### Requirement: Public admission and capacity contract
 
-The system MUST accept or reject a vehicle via `admit(vehicle) -> bool` without the calling thread ever blocking or sleeping in wait for a parking space. Admission acceptance MUST mean the vehicle's independent execution thread is registered and started, NOT that the vehicle immediately received a space.
+The current runtime MUST expose `ParkingLot(capacity, event_queue,
+authorization_registry)` with `start()`, `admit(vehicle) -> AdmissionResult`,
+`snapshot() -> ParkingSnapshot`, and
+`close(wait: bool = True, cancel_pending: bool = True) -> None`. Admission MUST
+validate and enqueue synchronously without waiting for capacity. An accepted
+result means the request is active/queued, not parked. Rejections MUST report
+one stable reason: `UNKNOWN_PLATE`, `NOT_AUTHORIZED`, `DUPLICATE_ACTIVE`,
+`LOT_CLOSED`, or `INVALID_REQUEST`.
 
-The system MUST return `True` from `admit` exactly when the vehicle was accepted and started, and MUST NOT use `admit`'s return value to signal space availability.
+The lot MUST enforce its configured capacity with a semaphore, acquiring a
+permit only when physical occupancy is committed and releasing it exactly once
+on departure. A lock/condition MUST protect shared transitions and coordinate
+workers without active polling. No per-vehicle threads are permitted; this is
+the task-worker implementation inside the engine process, not a thread or
+process per vehicle.
 
-#### Scenario: Admission accepted when a space is available
+#### Scenario: Full lot does not block admission
 
-- GIVEN a `ParkingLot` with capacity greater than zero and fewer occupied spaces than capacity
-- WHEN the caller calls `admit(vehicle)`
-- THEN `admit` returns `True` promptly (without waiting on capacity)
-- AND the vehicle's thread is started
-- AND the vehicle subsequently reaches the parked state
+- GIVEN a started lot at capacity
+- WHEN a valid authorized vehicle request is submitted
+- THEN `admit` returns promptly with an accepted result
+- AND the request does not consume a permit until occupancy is committed
+- AND occupied count never exceeds capacity
 
-#### Scenario: Admission accepted while the lot is full
+#### Scenario: Invalid or closed request is rejected
 
-- GIVEN a `ParkingLot` whose all spaces are currently occupied
-- WHEN the caller calls `admit(vehicle)`
-- THEN `admit` returns `True` promptly, without the calling thread being blocked in `admit`
-- AND the vehicle transitions to the waiting state and does NOT count toward occupied spaces
+- GIVEN a request that is invalid, unauthorized, duplicate-active, or submitted
+  after close
+- WHEN `admit` processes the request
+- THEN it returns the corresponding stable rejection reason
+- AND the request is not active and consumes no slot or permit
 
-#### Scenario: Admission must not create occupied state synchronously beyond capacity
+### Requirement: Fixed-slot authorization and active-plate uniqueness
 
-- GIVEN a `ParkingLot` at full occupied capacity
-- WHEN `admit` returns `True` for an accepted vehicle
-- THEN an immediate `snapshot()` MUST show `occupied_count` less than or equal to `capacity`
-        - AND `waiting_count` reflects accepted vehicles that have entered the `WAITING` state and have not yet acquired a space
+The JSON authorization registry MUST be validated completely before workers
+start and supplied to core as an immutable registry. A plate MUST only occupy
+its assigned specific slot; core MUST NOT reassign it to another slot. An
+active plate MUST be rejected as `DUPLICATE_ACTIVE` until its accepted request
+finishes or is cancelled. Slot ownership and active-plate registration MUST be
+released consistently and exactly once on the applicable terminal transition.
 
-#### Scenario: Admission rejected after close
+#### Scenario: Authorized slot is unavailable
 
-- GIVEN a `ParkingLot` that has been closed
-- WHEN the caller calls `admit(vehicle)`
-- THEN `admit` returns `False` promptly
-- AND the vehicle's thread is not started
-- AND no space is reserved for that vehicle
+- GIVEN a valid plate assigned to a specific occupied slot
+- WHEN its request is admitted
+- THEN the request waits without occupying a different slot
+- AND the slot may be assigned again only after its current owner releases it
 
-### Requirement: Bounded capacity
+#### Scenario: Plate registration is released
 
-The system MUST ensure that the number of concurrently parked vehicles never exceeds the configured `capacity` at any observable moment, including under concurrent admission and release cycles.
+- GIVEN an accepted request that finishes normally or is cancelled while
+  pending
+- WHEN its terminal transition is completed
+- THEN its active-plate registration is released exactly once
+- AND any physically occupied slot and semaphore permit are released exactly
+  once
 
-The system MUST NOT allow a vehicle to enter the parked state while all spaces are occupied; the vehicle MUST wait until a space is released by another vehicle.
+### Requirement: Arrival order and eligible FIFO
 
-#### Scenario: Never more parked vehicles than capacity
+The project owner has definitively adopted FIFO among eligible requests, with
+strict FIFO per authorized slot. Requests MUST be considered in acceptance order
+under the core lock; concurrent call start times do not define arrival order.
+A request is eligible when its assigned slot is free and no older pending
+request targets that same slot. Only validated authorized requests enter the
+pending queue. No request MAY occupy a different slot.
 
-- GIVEN a `ParkingLot` with `capacity = 2`
-- WHEN more than two vehicles are admitted concurrently
-- THEN every observation taken at any time shows `snapshot().occupied_count <= 2`
-- AND at most two `space_id` values appear simultaneously across live vehicles
+An occupied slot MUST NOT block eligible requests for other slots. Once the
+blocked slot is released, its oldest still-eligible pending request MUST be
+served before younger requests for that slot. This avoids unnecessary global
+blocking while preserving FIFO among requests competing for the same resource.
+It is not strict global FIFO and is not pending professor approval. There is
+no bounded-wait guarantee if a slot never becomes available; early close cancels
+pending requests, while natural close drains them after occupants finish.
 
-#### Scenario: Occupancy returns to zero after all cycles complete
+`Condition(Lock())` protects acceptance, selection, occupancy and release. The
+semaphore is acquired only at occupancy commit and released on departure;
+pending requests do not hold permits.
 
-- GIVEN a `ParkingLot` with capacity `N` and `M > N` admitted vehicles whose parking durations and wait times all elapse
-- WHEN all admitted vehicles eventually finish
-- THEN `snapshot().occupied_count` becomes `0`
+#### Scenario: Longest-waiting eligible request
 
-### Requirement: Exclusive space ownership
+- GIVEN multiple waiting requests whose authorized slots are available
+- WHEN the lot selects a request to occupy a released slot
+- THEN the eligible request with the longest wait is served first
 
-The system MUST guarantee that at any moment each `space_id` is owned by at most one live vehicle. No two concurrently parked vehicles MAY share the same `space_id`.
+#### Scenario: A blocked slot does not stop another eligible request
 
-When a vehicle releases a space, the system MAY assign that same `space_id` to a different vehicle afterwards; the exclusivity rule applies to concurrent ownership only.
+- GIVEN an occupant holds slot 0 and A is waiting for slot 0
+- WHEN B is accepted after A for free authorized slot 1
+- THEN B enters slot 1 while A keeps waiting for slot 0
+- AND neither request may occupy an unauthorized slot
+- AND when slot 0 is released A enters before a younger request for slot 0
 
-#### Scenario: Two vehicles never owned the same space simultaneously
+#### Validation evidence and review status
 
-- GIVEN several vehicles admitted to a `ParkingLot` with fewer spaces than admitted vehicles
-- WHEN vehicle observations (snapshots and per-vehicle enter/exit records) are collected during a run or stress cycle
-- THEN no `space_id` value is ever associated with two live vehicles at the same time
-- AND a recorded conflict of any `space_id` constitutes a contract violation
+`tests/test_parking.py` covers this contract through:
 
-#### Scenario: A released space can be reused by another vehicle
+- `test_same_slot_fifo_and_progress_on_other_slot`: controlled releases verify
+  blocked A, progress of B, eventual entry of A and same-slot ordering.
+- `test_oldest_eligible_request_is_selected_before_later_eligible_request`:
+  event-coordinated selection among requests for distinct free slots.
+- `test_three_same_slot_requests_enter_in_fifo_order_across_releases` and
+  `test_concurrent_slot_releases_preserve_capacity_and_progress_fifo`:
+  repeated per-slot FIFO, exclusive authorized occupancy and permit recovery.
+- `test_admission_commit_racing_with_close_has_one_terminal_outcome`, early-close
+  and natural-drain tests: accepted requests terminate without duplicate outcomes.
+- `test_rejection_reasons_and_duplicate_active_for_waiting_and_parked` and
+  `test_concurrent_same_plate_admission_has_single_winner`: active-plate exclusion.
 
-- GIVEN a vehicle `A` parked in `space_id = 3`, which then exits
-- WHEN another vehicle `B` later acquires a space
-- THEN `B` MAY receive `space_id = 3`
-- AND the assignment MUST occur only after `A` released the space (no overlapping ownership)
+The controlled-release tests adjust private deadlines under the condition lock
+to avoid depending on short dwell times; assertions use admission results,
+snapshots, vehicle states and lifecycle events, with a white-box permit check.
+Successful tests are bounded evidence, not proof that all races or deadlocks
+are impossible.
 
-### Requirement: Waiters enter when space is released
+Engram's latest available review record (2026-10-24, observation 490) reports
+`review-5d649f61e49db666` awaiting `review-reliability` because native capture
+transport was unavailable. It records no admitted verdict. This historical
+administrative pending state is not evidence of a FIFO defect, nor a current
+live-status confirmation. Changes to tests do not inherit review of older bytes.
 
-The system MUST eventually admit a waiting vehicle to the parked state once at least one space becomes free, when the lot is still open. A released space MUST NOT remain unused indefinitely while vehicles wait.
+Validation on 2026-10-24 in the local working tree:
 
-The system MUST keep waiting vehicles out of occupied counts while they wait; their pending state MUST be observable as a waiting count in the snapshot.
+- The two previously uncommitted tests passed before adjustment (2 passed in
+  60.08 s). Their intent is retained; controlled releases now avoid long waits
+  and per-slot assertions no longer require an unsupported global entry order.
+  The close test observes the closed predicate before releasing publication and
+  checks thread errors and agreement between terminal event and vehicle state.
+- `.venv/bin/python -m pytest tests/test_parking.py tests/test_vehicle_lifecycle.py tests/test_app_shutdown.py -q -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning`:
+  41 passed in 1.32 s.
+- `.venv/bin/python -m pytest -q -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning`:
+  223 passed in 12.96 s.
+- Independent technical verification in an external scratch copy found no
+  change-caused blockers; parking tests passed (27), and two additional probe
+  cases passed against both candidate and baseline production. This is not a
+  native review verdict. Those exploratory probes are not repository tests.
 
-#### Scenario: Wait then entry upon release
+FIFO is functionally closed within this contract: production is unchanged and
+no in-scope functional defect is known from these checks. The two improved tests
+were uncommitted at that validation date, as requested. Native assessment of this change reported
+`medium`, `review_due: false`, `under_budget`; no replacement review was started
+and no approval of the historical transaction is claimed. Successful tests do
+not certify all academic requirements or absence of every race/deadlock.
 
-- GIVEN a full `ParkingLot` with `capacity = 1` and two admitted vehicles `A` and `B`
-- WHEN `A` acquires the single space and later exits, releasing it
-- THEN `B` eventually transitions from waiting to parked and emits entry in the same state transition window
-- AND `B` never occupied a second simultaneous space
-- AND `snapshot().occupied_count` goes back to `1` after the release, held by `B`
+### Requirement: Exclusive spaces and immutable snapshots
 
-#### Scenario: Waiting vehicles are visibly waiting before a space frees
+At most one vehicle MAY physically occupy a slot at any time, and occupied
+count MUST never exceed capacity. `snapshot()` MUST return an immutable/copied
+view with `capacity`, `occupied_count`, `waiting_count`, and
+`occupied_spaces: tuple[tuple[int, int], ...]`. It MUST satisfy
+`occupied_count == len(occupied_spaces)` and MUST NOT expose mutable internal
+state or mutate the lot.
 
-- GIVEN a full `ParkingLot` and at least one extra admitted vehicle
-- WHEN a snapshot is taken before any occupied vehicle exits
-- THEN `snapshot().waiting_count` is greater than zero
-- AND `snapshot().occupied_count` equals `capacity`
+#### Scenario: Concurrent activity preserves snapshot invariants
 
-### Requirement: Immutable consistent snapshots
+- GIVEN concurrent admissions, departures, and snapshot reads
+- WHEN snapshots are observed throughout the run
+- THEN occupied count never exceeds capacity
+- AND each slot appears at most once in occupied spaces
+- AND a previously returned snapshot is unchanged by later state transitions
 
-The system MUST expose `snapshot() -> ParkingSnapshot` such that returning a snapshot MUST NOT expose internal mutable structures by reference: subsequent state changes to the lot MUST NOT alter a previously returned snapshot value.
+### Requirement: Graceful shutdown
 
-Each snapshot MUST contain at least the fields `capacity: int`, `occupied_count: int`, `waiting_count: int`, and `occupied_spaces: tuple[tuple[int, int], ...]` — one `(space_id, vehicle_id)` pair per currently parked vehicle.
+The first close MUST select natural drain or pending cancellation. A subsequent
+explicit Stop MUST be able to escalate a natural drain to cancellation under
+the same condition lock. Once cancellation is selected, later closes MUST NOT
+downgrade it, including stale `cancel_pending=False` calls. Repeated Stop is
+idempotent. Already parked requests finish and release their permits; pending
+requests cancelled before occupancy have exactly one CANCELLED terminal.
 
-The system MUST ensure internal consistency of each snapshot: `occupied_count` MUST equal the length of `occupied_spaces`, and `waiting_count` MUST match the number of live accepted vehicles currently waiting for a space at the snapshot's creation time.
+Every close MUST reject later requests. `cancel_pending=True` (the default)
+requests cancellation of accepted requests still waiting; parked requests are
+allowed to finish. `cancel_pending=False` allows accepted pending requests to
+drain normally. `wait=True` (the default) joins both started lot workers and
+returns only after the selected drain/cancellation behavior completes;
+`wait=False` returns without joining or guaranteeing that work has drained.
+Workers MUST NOT be forcibly terminated. The Simulator uses
+`cancel_pending=stop_requested.is_set()`: an early stop requests pending
+cancellation, while natural completion drains accepted requests.
 
-The system MUST NOT allow snapshot reads to mutate parking state; reading a snapshot MUST NOT change admission, allocation, or wait outcomes.
+The first close selects draining or cancellation. A later explicit Stop MUST
+be able to escalate an active natural drain to cancellation of pending requests.
+Once cancellation is selected, a later stale natural close MUST NOT downgrade
+it. The lot remains closed to new admissions throughout.
 
-#### Scenario: Snapshot invariants under load
+#### Scenario: Close waits for completion
 
-- GIVEN several vehicles admitted concurrently while others enter and exit
-- WHEN snapshots are taken repeatedly during the run
-- THEN every snapshot satisfies `occupied_count == len(snapshot.occupied_spaces)` AND `occupied_count <= capacity`
-- AND every `space_id` appears at most once in each snapshot's `occupied_spaces`
+- GIVEN accepted waiting and parked requests
+- WHEN `close(wait=True, cancel_pending=False)` returns
+- THEN all accepted requests have drained to their normal terminal outcomes
+- AND no lot worker remains active
 
-#### Scenario: Snapshot is not mutated by later events
+#### Scenario: Early close cancels pending requests and waits
 
-- GIVEN a snapshot `s1` was taken at time `t` showing some occupied state
-- WHEN later vehicles enter, exit, or are cancelled
-- THEN `s1` still shows exactly the values observed at time `t`
-- AND no later mutation of lot state MUST affect the contents of `s1` or the outcomes of other vehicles
+- GIVEN accepted waiting and parked requests
+- WHEN `close(wait=True, cancel_pending=True)` returns
+- THEN pending requests are cancelled and parked requests finish normally
+- AND no lot worker remains active
 
-#### Scenario: Empty-lot snapshot
+#### Scenario: Stop escalates an active natural drain
 
-- GIVEN a `ParkingLot` with `capacity = 2` and no admitted vehicles
-- WHEN `snapshot()` is taken
-- THEN `occupied_count = 0`, `waiting_count = 0`, and `occupied_spaces` is an empty tuple
-- AND `capacity` is reported as `2`
+- GIVEN accepted pending and parked requests after `close(wait=False, cancel_pending=False)` begins
+- WHEN a later `close(wait=False, cancel_pending=True)` requests Stop
+- THEN pending requests are cancelled and parked requests finish normally
+- AND a subsequent `cancel_pending=False` close does not restore draining
+
+### Requirement: Multiprocessing and IPC academic requirement
+
+The runtime MUST preserve the spawn engine's ownership of ParkingLot and
+Simulator, validated multiprocessing command/output queues, and the parent
+transport's projection to the local Tk event queue. The local Tk queue is not
+IPC. Changes to ownership or public contracts require coordination.
+
+#### Scenario: Engine and parent preserve state ownership
+
+- GIVEN a simulation run in the child engine
+- WHEN commands, events and selected audit records cross IPC
+- THEN only engine workers mutate parking state under core synchronization
+- AND the parent validates messages, audits them through its single file writer,
+  and delivers events to Tk without worker widget access

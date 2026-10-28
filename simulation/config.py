@@ -1,8 +1,18 @@
-"""Default parameters for the parking simulation."""
+"""Simulation configuration."""
 
-PARKING_CAPACITY = 10
-TOTAL_VEHICLES = 30
-MIN_ARRIVAL_TIME = 0.2
-MAX_ARRIVAL_TIME = 0.5
-MIN_PARKING_TIME = 2.0
-MAX_PARKING_TIME = 5.0
+from pathlib import Path
+
+PARKING_CAPACITY = 5
+TOTAL_VEHICLES = 15
+AUTHORIZATION_FILE = Path(__file__).with_name("default_authorizations.json")
+PLATE_SEQUENCE = tuple(f"EDU-{number:03d}" for number in range(1, TOTAL_VEHICLES + 1))
+
+MIN_ARRIVAL_TIME = 1
+MAX_ARRIVAL_TIME = 4
+
+MIN_PARKING_TIME = 3
+MAX_PARKING_TIME = 8
+
+SHUTDOWN_POLL_INTERVAL_MS = 100
+SHUTDOWN_DRAIN_WARNING_SECONDS = MAX_PARKING_TIME + 2
+SIMULATION_DRAIN_POLL_INTERVAL_SECONDS = 0.1
