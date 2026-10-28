@@ -117,9 +117,10 @@ When Simulator completes a run, it MUST wait for core to drain and publish all t
 The academic system MUST provide concurrent logging that is safe and traceable
 across its processes. The current application audit uses a `QueueHandler`, a
 `QueueListener`, and a unique UTF-8 file per application session, separate from
-the Tk event queue; that describes the present in-process runtime and does not
-establish multiprocessing-safe logging. Cross-process logging ownership and
-synchronization remain pending design decisions. Event auditing MUST remain
+the Tk event queue. The parent process owns the file writer; the engine child
+forwards selected audit records through validated IPC. Events are recorded once
+by the parent publication adapter. This implementation does not by itself
+establish complete academic traceability. Event auditing MUST remain
 single-pass at the publication adapter and MUST NOT require changing
 `ParkingEvent` fields solely to add a run identifier.
 
@@ -129,3 +130,9 @@ process/thread/run context to correlate concurrent activity. Logging MUST
 avoid exposing sensitive data and MUST NOT let independent unsynchronized
 writers mutate critical parking state. The current logger's coverage of every
 required trace detail has not been established by this specification update.
+
+The persisted format appends `waiting_time`, `result`, and `error_summary` after
+the historical fields. `waiting_time` on ENTERED is seconds from queue
+acceptance to physical occupancy. `result` records the canonical lifecycle
+outcome. A child-process `error_summary` is bounded exception text, not a full
+traceback; genuine parent exceptions retain their traceback in `traceback`.

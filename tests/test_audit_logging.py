@@ -17,6 +17,99 @@ def rows(path):
     return path.read_text(encoding="utf-8").splitlines()
 
 
+@pytest.mark.parametrize("kind,result,slot,wait,reason", [
+    ("VEHICLE_CREATED", "ACCEPTED", None, None, None),
+    ("VEHICLE_WAITING", "WAITING", None, None, None),
+    ("VEHICLE_ENTERED", "PARKED", 0, 1.25, None),
+    ("VEHICLE_ENTERED", "PARKED", 0, 0.0, None),
+    ("VEHICLE_EXITED", "RELEASED", 0, None, None),
+    ("VEHICLE_FINISHED", "FINISHED", None, None, None),
+    ("VEHICLE_CANCELLED", "CANCELLED", None, None, "STOP_REQUESTED"),
+    ("VEHICLE_REJECTED", "REJECTED", None, None, "DUPLICATE_ACTIVE"),
+    ("VEHICLE_REJECTED", "REJECTED", None, None, "UNKNOWN_PLATE"),
+    ("VEHICLE_REJECTED", "REJECTED", None, None, "NOT_AUTHORIZED"),
+    ("VEHICLE_REJECTED", "REJECTED", None, None, "LOT_CLOSED"),
+    ("VEHICLE_REJECTED", "REJECTED", None, None, "INVALID_REQUEST"),
+    ("SIMULATION_STARTED", None, None, None, None),
+    ("SIMULATION_FINISHED", None, None, None, None),
+])
+def test_canonical_event_persists_result_and_wait_without_duplicate_rows(
+        tmp_path, kind, result, slot, wait, reason):
+    audit = AuditSession(tmp_path)
+    event = ParkingEvent(kind, 1.0, 7, slot, wait, "TEST", 0, reason)
+    origin = {"origin_process_id": 123, "origin_process_name": "parking-engine",
+              "origin_thread_name": "parking-admission"}
+    try:
+        audit.event(event, "trace-run", origin=origin)
+        assert audit.confirm()
+    finally:
+        audit.close()
+    records = rows(audit.path)
+    assert len(records) == 1
+    record = dict(field.split("=", 1) for field in records[0].split("\t"))
+    assert record["waiting_time"] == ("-" if wait is None else str(wait))
+    assert record["result"] == (result or "-")
+    assert record["reason"] == (reason or "-")
+    assert record["space_id"] == ("-" if slot is None else str(slot))
+    assert record["authorized_space_id"] == "0"
+    assert record["run_id"] == "trace-run" and record["vehicle_id"] == "7"
+    assert record["plate"] == "TEST" and record["event_type"] == kind
+    assert record["event_time"] == "1970-01-01T00:00:01.000Z"
+    assert all(record[key] == str(value) for key, value in origin.items())
+    assert record["threadName"] == threading.current_thread().name
+    assert record["processName"] != record["origin_process_name"]
+    assert record["error_summary"] == record["traceback"] == "-"
+    assert list(record) == [
+        "timestamp", "level", "run_id", "record_kind", "operation", "event_type",
+        "event_time", "vehicle_id", "plate", "authorized_space_id", "space_id",
+        "reason", "threadName", "processName", "origin_process_id", "origin_process_name",
+        "origin_thread_name", "exception_type", "traceback",
+        "waiting_time", "result", "error_summary",
+    ]
+    assert audit.audit_complete
+
+
+def test_parent_exception_retains_real_traceback_and_no_child_summary(tmp_path):
+    audit = AuditSession(tmp_path)
+    try:
+        try:
+            raise ValueError("controlled parent failure")
+        except ValueError as error:
+            audit.exception("application", None, error)
+    finally:
+        audit.close()
+    assert len(rows(audit.path)) == 1
+    record = dict(field.split("=", 1) for field in rows(audit.path)[0].split("\t"))
+    assert "Traceback (most recent call last)" in record["traceback"]
+    assert "ValueError: controlled parent failure" in record["traceback"]
+    assert record["error_summary"] == "-" and record["run_id"] == "-"
+
+
+def test_child_error_summary_is_not_mislabeled_as_traceback(tmp_path):
+    audit = AuditSession(tmp_path)
+    summary = "ValueError: controlled\tchild\nfailure"
+    origin = {"origin_process_id": 123, "origin_process_name": "parking-engine",
+              "origin_thread_name": "simulation-producer"}
+    try:
+        audit.audit_record({
+            "name": "ERROR", "run_id": "child-run", "timestamp": 1.0,
+            "payload": {"operation": "producer", "exception_type": "ValueError",
+                        "error": summary, **origin},
+        })
+    finally:
+        audit.close()
+    assert len(rows(audit.path)) == 1
+    record = dict(field.split("=", 1) for field in rows(audit.path)[0].split("\t"))
+    assert record["error_summary"] == "ValueError: controlled\\tchild\\nfailure"
+    assert record["traceback"] == record["result"] == record["waiting_time"] == "-"
+    assert record["exception_type"] == "ValueError"
+    assert record["level"] == "ERROR" and record["record_kind"] == "child_audit"
+    assert record["operation"] == "producer" and record["run_id"] == "child-run"
+    assert record["event_time"] == "1970-01-01T00:00:01.000Z"
+    assert all(record[key] == str(value) for key, value in origin.items())
+    assert audit.audit_complete
+
+
 def test_event_logged_once_with_original_time_context_and_unchanged_ui_queue(tmp_path):
     audit = AuditSession(tmp_path)
     run_id = audit.begin_run()

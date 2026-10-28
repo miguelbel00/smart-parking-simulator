@@ -582,6 +582,11 @@ abstractions unless the team separately authorizes a scope change.
   tiempo y contexto de proceso/hilo. Estos requisitos deben distinguirse de lo
   que el runtime registra actualmente; la cobertura no está completamente
   verificada.
+- El registro persistido agrega `waiting_time`, `result` y `error_summary`
+  después de los campos históricos. `waiting_time` en ENTERED mide segundos
+  desde la aceptación en cola hasta la ocupación física. `result` resume el
+  resultado canónico del evento. El resumen de excepción del hijo no es un
+  traceback; las excepciones reales del padre conservan su traceback.
 - El cierre confirma drenaje mediante una barrera y detiene el listener tras
   el cierre del motor. Fallos de escritura, colas, transporte o confirmación
   marcan la auditoría incompleta e informan por stderr; no garantizan
