@@ -400,8 +400,10 @@ La lógica específica debe permanecer en su módulo correspondiente.
   `occupied_count`, `waiting_count` y `occupied_spaces`, una tupla de pares
   `(space_id, vehicle_id)`. No expone estructuras mutables internas.
 - El cierre temprano cancela solicitudes en espera y permite terminar las
-  estacionadas. El cierre natural drena las aceptadas. `wait=True` une ambos
-  trabajadores y no termina hilos a la fuerza.
+  estacionadas. El cierre natural drena las aceptadas. Si Stop llega después
+  de iniciar el drenaje natural, puede escalarlo a cancelación de pendientes;
+  una llamada natural atrasada no revierte esa cancelación. `wait=True` une
+  ambos trabajadores y no termina hilos a la fuerza.
 - La UI consume eventos de la cola. Si lee un snapshot, lo hace solo como
   consulta segura, nunca para alterar el estado del core.
 

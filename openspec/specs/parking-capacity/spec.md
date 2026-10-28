@@ -115,6 +115,11 @@ Workers MUST NOT be forcibly terminated. The Simulator uses
 `cancel_pending=stop_requested.is_set()`: an early stop requests pending
 cancellation, while natural completion drains accepted requests.
 
+The first close selects draining or cancellation. A later explicit Stop MUST
+be able to escalate an active natural drain to cancellation of pending requests.
+Once cancellation is selected, a later stale natural close MUST NOT downgrade
+it. The lot remains closed to new admissions throughout.
+
 #### Scenario: Close waits for completion
 
 - GIVEN accepted waiting and parked requests
@@ -128,6 +133,13 @@ cancellation, while natural completion drains accepted requests.
 - WHEN `close(wait=True, cancel_pending=True)` returns
 - THEN pending requests are cancelled and parked requests finish normally
 - AND no lot worker remains active
+
+#### Scenario: Stop escalates an active natural drain
+
+- GIVEN accepted pending and parked requests after `close(wait=False, cancel_pending=False)` begins
+- WHEN a later `close(wait=False, cancel_pending=True)` requests Stop
+- THEN pending requests are cancelled and parked requests finish normally
+- AND a subsequent `cancel_pending=False` close does not restore draining
 
 ### Requirement: Multiprocessing and IPC academic requirement
 

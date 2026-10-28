@@ -65,7 +65,7 @@ class ParkingLot:
         self._sequence = 0
         self._entry_sequence = 0
         self._closed = False
-        self._cancel_pending = True
+        self._cancel_pending = False
         self._started = False
         self._admission_started = False
         self._departure_started = False
@@ -315,7 +315,8 @@ class ParkingLot:
             raise RuntimeError("A parking worker cannot join its parking lot")
         with self._condition:
             self._closed = True
-            self._cancel_pending = self._cancel_pending and cancel_pending
+            # Explicit Stop can escalate a natural drain, never the reverse.
+            self._cancel_pending = self._cancel_pending or cancel_pending
             self._condition.notify_all()
             started = self._started
         try:
