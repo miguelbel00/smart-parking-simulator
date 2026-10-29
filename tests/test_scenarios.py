@@ -37,8 +37,8 @@ def test_all_scenarios_use_the_configured_parking_capacity():
         "normal_entry_and_exit",
         "stop_cancellation_demo",
     )):
-        assert scenario.capacity == PARKING_CAPACITY == 10
-        assert build_payload(scenario.name)["config"]["capacity"] == 10
+        assert scenario.capacity == PARKING_CAPACITY == 6
+        assert build_payload(scenario.name)["config"]["capacity"] == 6
 
 
 def test_normal_entry_and_exit_payload_has_gradual_arrivals_and_long_stays():
@@ -52,6 +52,7 @@ def test_normal_entry_and_exit_payload_has_gradual_arrivals_and_long_stays():
     assert payload["config"]["max_parking_time"] == 12
     assert len(payload["authorization"]["vehicles"]) == 30
     assert validate_start_payload(payload) == payload
+    assert "capacidad fija de 6 puestos" in get_scenario("normal_entry_and_exit").academic_requirement
 
 
 def test_get_unknown_scenario_raises():

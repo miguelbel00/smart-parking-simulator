@@ -578,8 +578,21 @@ def test_parking_app_builds_kpi_cards_with_real_tk() -> None:
             "Simulación", "Solicitudes", "Telemetría", "Eventos"
         ]
         assert app.views.select() == str(app.simulation_view)
-        assert app.parking_grid.master == app.simulation_view
-        assert app.waiting_lane.master == app.simulation_view
+        assert app.parking_grid.master == app.waiting_lane.master
+        assert app.parking_grid.master.master == app.simulation_view
+        assert len(app.parking_grid.slots) == 6
+        assert app.parking_grid.columns == 3
+        assert app.parking_grid.master.grid_columnconfigure(0)["weight"] == 1
+        assert app.parking_grid.master.grid_columnconfigure(1)["weight"] == 1
+        app.root.update_idletasks()
+        parking_width = app.parking_grid.winfo_width()
+        panel_width = app.waiting_lane.winfo_width()
+        assert 49 <= parking_width / (parking_width + panel_width) * 100 <= 51
+        top_slot = app.parking_grid.slots[1]
+        bottom_slot = app.parking_grid.slots[4]
+        assert top_slot.winfo_rooty() == app.waiting_lane.winfo_rooty()
+        assert (bottom_slot.winfo_rooty() + bottom_slot.winfo_height()
+                == app.waiting_lane.winfo_rooty() + app.waiting_lane.winfo_height())
         assert app.request_table.master == app.requests_view
         assert app.metrics_summary.master == app.telemetry_view
         assert app.event_log.master == app.events_view
@@ -592,10 +605,10 @@ def test_parking_app_builds_kpi_cards_with_real_tk() -> None:
         assert slot.plate == "REAL-34"
         assert slot._lbl_detail.cget("text") == "REAL-34 (#34)"
         assert slot._lbl_id.cget("text") == "Espacio #1"
-        assert app.card_occupied.subtitle == "de 5 (4 libres)"
+        assert app.card_occupied.subtitle == "de 6 (5 libres)"
         app._dispatch_event(event("VEHICLE_EXITED", 34, 0, plate="REAL-34"))
         assert slot.plate is None
-        assert app.card_occupied.subtitle == "de 5 (5 libres)"
+        assert app.card_occupied.subtitle == "de 6 (6 libres)"
         app._dispatch_event(event("VEHICLE_ENTERED", 35, 0))
         assert slot.plate is None
         assert slot._lbl_detail.cget("text") == "Auto #35"

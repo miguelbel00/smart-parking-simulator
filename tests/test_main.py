@@ -57,8 +57,8 @@ def test_main_composes_ipc_controller_with_validated_payload(monkeypatch, tmp_pa
         {"plate": "EDU-001", "authorized": True, "space_id": 0}
     ]
     assert observed["payload"]["config"]["capacity"] == observed["capacity"]
-    assert observed["selected_payload"]["config"]["capacity"] == 10
-    assert observed["supported_capacities"] == {10}
+    assert observed["selected_payload"]["config"]["capacity"] == 6
+    assert observed["supported_capacities"] == {6}
 
 
 def test_main_without_run_does_not_print_statistics(monkeypatch, capsys, tmp_path):

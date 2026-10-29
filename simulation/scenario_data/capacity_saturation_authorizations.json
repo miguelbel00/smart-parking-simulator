@@ -8,9 +8,9 @@
     {"plate": "SAT-F", "authorized": true, "space_id": 3},
     {"plate": "SAT-G", "authorized": true, "space_id": 4},
     {"plate": "SAT-H", "authorized": true, "space_id": 5},
-    {"plate": "SAT-I", "authorized": true, "space_id": 6},
-    {"plate": "SAT-J", "authorized": true, "space_id": 7},
-    {"plate": "SAT-K", "authorized": true, "space_id": 8},
-    {"plate": "SAT-L", "authorized": true, "space_id": 9}
+    {"plate": "SAT-I", "authorized": true, "space_id": 0},
+    {"plate": "SAT-J", "authorized": true, "space_id": 1},
+    {"plate": "SAT-K", "authorized": true, "space_id": 2},
+    {"plate": "SAT-L", "authorized": true, "space_id": 3}
   ]
 }

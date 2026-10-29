@@ -118,7 +118,7 @@ NORMAL_ENTRY_AND_EXIT = ScenarioDefinition(
     name="normal_entry_and_exit",
     title="Flujo gradual de 30 vehiculos con espera y salida",
     academic_requirement=(
-        "Flujo de 30 solicitudes autorizadas con capacidad fija de 10 "
+        "Flujo de 30 solicitudes autorizadas con capacidad fija de 6 "
         "puestos, una llegada por segundo y 12 segundos de permanencia: "
         "ocupacion completa, solicitudes pendientes visibles y finalizacion "
         "natural tras liberar puestos, sin rechazos ni cancelaciones."

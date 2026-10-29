@@ -149,7 +149,7 @@ class ParkingSlotWidget(tk.Frame):
 class ParkingLotGridWidget(tk.Frame):
     """Container grid organizing all parking slot widgets."""
 
-    def __init__(self, parent: tk.Widget, columns: int = 5, **kwargs) -> None:
+    def __init__(self, parent: tk.Widget, columns: int = 3, **kwargs) -> None:
         super().__init__(parent, bg=COLOR_BG_PRIMARY, **kwargs)
         self.columns = columns
         self.slots: dict[int, ParkingSlotWidget] = {}
@@ -165,14 +165,16 @@ class ParkingLotGridWidget(tk.Frame):
             row = (index - 1) // self.columns
             col = (index - 1) % self.columns
             slot_widget = ParkingSlotWidget(self, space_id=index)
-            slot_widget.grid(row=row, column=col, padx=5, pady=5, sticky="ew")
+            slot_widget.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
             self.slots[index] = slot_widget
 
         for col_idx in range(self.columns):
             self.grid_columnconfigure(col_idx, weight=1, uniform="slot_col")
         for row_idx in range(total_rows):
-            # Keep natural card height so slots do not stretch into tall empty towers on maximize
-            self.grid_rowconfigure(row_idx, weight=0)
+            if capacity:
+                self.grid_rowconfigure(row_idx, weight=1, uniform="slot_row")
+            else:
+                self.grid_rowconfigure(row_idx, weight=0)
 
     def occupy_slot(self, slot_key: int, vehicle_id: int, plate: str | None = None) -> None:
         """Mark a projected, 1-based display slot as occupied."""

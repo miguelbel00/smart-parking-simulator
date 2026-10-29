@@ -17,7 +17,7 @@ class SlotStub:
         self.destroyed = True
 
 
-def make_grid(monkeypatch, columns: int = 5):
+def make_grid(monkeypatch, columns: int = 3):
     monkeypatch.setattr(parking_grid, "ParkingSlotWidget", SlotStub)
     grid = object.__new__(parking_grid.ParkingLotGridWidget)
     grid.columns = columns
@@ -34,7 +34,7 @@ def make_grid(monkeypatch, columns: int = 5):
 
 
 def test_capacity_slots_are_placed_in_row_major_grid(monkeypatch) -> None:
-    grid = make_grid(monkeypatch)
+    grid = make_grid(monkeypatch, columns=5)
 
     grid.setup_slots(11)
 
@@ -69,3 +69,19 @@ def test_empty_capacity_keeps_one_configurable_row(monkeypatch) -> None:
 
     assert grid.slots == {}
     assert grid.row_configuration == [(0, {"weight": 0})]
+
+
+def test_six_slots_use_three_columns_and_two_rows(monkeypatch) -> None:
+    grid = make_grid(monkeypatch)
+
+    grid.setup_slots(6)
+
+    assert [(slot.grid_options["row"], slot.grid_options["column"])
+            for slot in grid.slots.values()] == [
+        (0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2),
+    ]
+    assert grid.row_configuration == [
+        (0, {"weight": 1, "uniform": "slot_row"}),
+        (1, {"weight": 1, "uniform": "slot_row"}),
+    ]
+    assert all(slot.grid_options["sticky"] == "nsew" for slot in grid.slots.values())

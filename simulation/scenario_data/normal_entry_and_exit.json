@@ -33,22 +33,22 @@
     {
       "plate": "NORM-007",
       "authorized": true,
-      "space_id": 6
+      "space_id": 0
     },
     {
       "plate": "NORM-008",
       "authorized": true,
-      "space_id": 7
+      "space_id": 1
     },
     {
       "plate": "NORM-009",
       "authorized": true,
-      "space_id": 8
+      "space_id": 2
     },
     {
       "plate": "NORM-010",
       "authorized": true,
-      "space_id": 9
+      "space_id": 3
     },
     {
       "plate": "NORM-011",
@@ -83,22 +83,22 @@
     {
       "plate": "NORM-017",
       "authorized": true,
-      "space_id": 6
+      "space_id": 0
     },
     {
       "plate": "NORM-018",
       "authorized": true,
-      "space_id": 7
+      "space_id": 1
     },
     {
       "plate": "NORM-019",
       "authorized": true,
-      "space_id": 8
+      "space_id": 2
     },
     {
       "plate": "NORM-020",
       "authorized": true,
-      "space_id": 9
+      "space_id": 3
     },
     {
       "plate": "NORM-021",
@@ -133,22 +133,22 @@
     {
       "plate": "NORM-027",
       "authorized": true,
-      "space_id": 6
+      "space_id": 0
     },
     {
       "plate": "NORM-028",
       "authorized": true,
-      "space_id": 7
+      "space_id": 1
     },
     {
       "plate": "NORM-029",
       "authorized": true,
-      "space_id": 8
+      "space_id": 2
     },
     {
       "plate": "NORM-030",
       "authorized": true,
-      "space_id": 9
+      "space_id": 3
     }
   ]
 }

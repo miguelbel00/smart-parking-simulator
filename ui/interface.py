@@ -57,7 +57,7 @@ class ParkingApp:
         self,
         event_queue: queue.Queue,
         simulator: Any | None = None,
-        capacity: int = 5,
+        capacity: int = config.PARKING_CAPACITY,
         poll_interval_ms: int = 100,
         scenario_options: Mapping[str, tuple[str, int]] | None = None,
         on_scenario_selected: Callable[[str | None], None] | None = None,
@@ -152,11 +152,19 @@ class ParkingApp:
              ("available", "Disponibles", COLOR_AVAILABLE),
              ("waiting", "Pendientes", COLOR_WAITING)),
         )
-        self.parking_grid = ParkingLotGridWidget(self.simulation_view, columns=5)
-        self.parking_grid.pack(fill="both", expand=True, pady=(10, 8))
+        simulation_content = tk.Frame(self.simulation_view, bg=COLOR_BG_PRIMARY)
+        simulation_content.pack(fill="both", expand=True, pady=(10, 8))
+        simulation_content.grid_columnconfigure(0, weight=1)
+        simulation_content.grid_columnconfigure(1, weight=1)
+        simulation_content.grid_rowconfigure(0, weight=1)
+
+        self.parking_grid = ParkingLotGridWidget(simulation_content, columns=3)
+        self.parking_grid.grid_propagate(False)
+        self.parking_grid.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         self.parking_grid.setup_slots(self.capacity)
-        self.waiting_lane = WaitingQueueWidget(self.simulation_view)
-        self.waiting_lane.pack(fill="x", pady=(0, 6))
+        self.waiting_lane = WaitingQueueWidget(simulation_content)
+        self.waiting_lane.pack_propagate(False)
+        self.waiting_lane.grid(row=0, column=1, sticky="nsew", pady=5)
         tk.Button(
             self.simulation_view, text="Ver todas las solicitudes →",
             command=lambda: self.views.select(self.requests_view),
@@ -876,7 +884,7 @@ if __name__ == "__main__":
             self.waiting_time = waiting_time
 
     demo_queue: queue.Queue = queue.Queue()
-    app = ParkingApp(event_queue=demo_queue, capacity=5)
+    app = ParkingApp(event_queue=demo_queue, capacity=config.PARKING_CAPACITY)
 
     def _demo_producer() -> None:
         """Simulate incoming concurrency events in a background thread."""
