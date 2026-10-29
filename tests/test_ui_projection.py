@@ -27,6 +27,7 @@ class Slot:
     def __init__(self) -> None:
         self.occupied_by = None
         self.plate = None
+        self.assigning = None
 
     def set_occupied(self, vehicle_id: int, plate: str | None = None) -> None:
         self.occupied_by = vehicle_id
@@ -35,6 +36,11 @@ class Slot:
     def set_available(self) -> None:
         self.occupied_by = None
         self.plate = None
+        self.assigning = None
+
+    def set_assigning(self, vehicle_id: int, plate: str | None = None) -> None:
+        self.assigning = (vehicle_id, plate)
+        self.plate = plate
 
     def reset(self) -> None:
         self.set_available()
@@ -365,7 +371,7 @@ def test_wait_entry_exit_and_terminal_cards_keep_plate_and_project_physical_spac
     assert "CAR-8" in app.logs[-1][1] and "Espacio autorizado #3" in app.logs[-1][1]
     assert app.waiting_lane.plates == {8: "CAR-8"}
     app._dispatch_event(event("VEHICLE_ENTERED", 8, 1, plate="CAR-8"))
-    assert app.parking_grid.slots[2].occupied_by == 8
+    assert app.parking_grid.slots[2].assigning == (8, "CAR-8")
     assert app.parking_grid.slots[2].plate == "CAR-8"
     assert "CAR-8" in app.logs[-1][1] and "Espacio #2" in app.logs[-1][1]
     app._dispatch_event(event("VEHICLE_EXITED", 8, 1, plate="CAR-8"))
@@ -387,6 +393,14 @@ def test_entry_log_reports_core_waiting_time_and_waiting_log_does_not():
     assert "tras esperar 2.50s" in app.logs[-1][1]
     app._dispatch_event(event("VEHICLE_ENTERED", 5, 1, plate="W-5"))
     assert "tras esperar" not in app.logs[-1][1]
+
+
+def test_entered_event_shows_assigning_state_before_occupancy():
+    app = make_app()
+    app._dispatch_event(event("VEHICLE_ENTERED", 4, 0, plate="W-4"))
+    slot = app.parking_grid.slots[1]
+    assert slot.assigning == (4, "W-4")
+    assert slot.occupied_by is None
 
 
 def test_lifecycle_start_clears_visual_residues_and_loads_fresh_run_metrics():
@@ -495,7 +509,7 @@ def test_app_reset_precedes_new_events_and_updates_visible_membership() -> None:
     app._dispatch_event(event("VEHICLE_WAITING", 7))
     app._dispatch_event(event("VEHICLE_ENTERED", 8, 0))
     app._dispatch_event(event("VEHICLE_FINISHED", 9))
-    assert (app.parking_grid.slots[1].occupied_by, app.waiting_lane.ids) == (8, {7})
+    assert (app.parking_grid.slots[1].assigning, app.waiting_lane.ids) == ((8, None), {7})
     assert (app.card_occupied.value, app.total_finished) == (1, 1)
 
     app._dispatch_event(event("SIMULATION_STARTED"))
@@ -503,7 +517,7 @@ def test_app_reset_precedes_new_events_and_updates_visible_membership() -> None:
     assert app.waiting_lane.ids == set()
     assert (app.card_occupied.value, app.total_finished) == (0, 0)
     app._dispatch_event(event("VEHICLE_ENTERED", 10, 4))
-    assert app.parking_grid.slots[5].occupied_by == 10
+    assert app.parking_grid.slots[5].assigning == (10, None)
     assert app.card_occupied.value == 1
     app._dispatch_event(event("VEHICLE_EXITED", 10, 4))
     assert app.parking_grid.slots[5].occupied_by is None
@@ -601,6 +615,8 @@ def test_parking_app_builds_kpi_cards_with_real_tk() -> None:
         assert app.card_finished.value_color == "#38bdf8"
         app._dispatch_event(event("VEHICLE_ENTERED", 34, 0, plate="REAL-34"))
         slot = app.parking_grid.slots[1]
+        assert slot._lbl_status.cget("text") == "ASIGNANDO"
+        slot._finish_assignment(slot._assignment_generation, 34, "REAL-34")
         assert slot.occupied_by == 34
         assert slot.plate == "REAL-34"
         assert slot._lbl_detail.cget("text") == "REAL-34 (#34)"
@@ -618,6 +634,7 @@ def test_parking_app_builds_kpi_cards_with_real_tk() -> None:
             app.views.select(tab)
             app.root.update_idletasks()
         assert app.projection.occupied == {1: 35}
+        slot._finish_assignment(slot._assignment_generation, 35, None)
         assert app.parking_grid.slots[1].occupied_by == 35
     finally:
         app.root.destroy()
@@ -1074,17 +1091,17 @@ def test_persistent_summary_warning_architecture_footer_and_canonical_recovery()
             event("VEHICLE_CREATED", 1, plate="EDU-001", authorized_space_id=0)
         )
 
-        # Inject transient failure in parking_grid.occupy_slot during VEHICLE_ENTERED
-        original_occupy = app.parking_grid.occupy_slot
+        # Inject transient failure in parking_grid.assign_slot during VEHICLE_ENTERED
+        original_assign = app.parking_grid.assign_slot
         calls = {"count": 0}
 
-        def flaky_occupy(slot_id: int, vehicle_id: int, plate: str | None = None) -> None:
+        def flaky_assign(slot_id: int, vehicle_id: int, plate: str | None = None) -> None:
             calls["count"] += 1
             if calls["count"] == 1:
                 raise RuntimeError("Fallo visual transitorio simulado")
-            original_occupy(slot_id, vehicle_id, plate)
+            original_assign(slot_id, vehicle_id, plate)
 
-        app.parking_grid.occupy_slot = flaky_occupy
+        app.parking_grid.assign_slot = flaky_assign
         app._dispatch_event(
             event(
                 "VEHICLE_ENTERED",
@@ -1095,7 +1112,7 @@ def test_persistent_summary_warning_architecture_footer_and_canonical_recovery()
                 waiting_time=0.8,
             )
         )
-        app.parking_grid.occupy_slot = original_occupy
+        app.parking_grid.assign_slot = original_assign
 
         # Canonical recovery reconstructed grid, table, and metrics without duplicating state
         assert app.parking_grid.slots[1].occupied_by == 1

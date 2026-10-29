@@ -586,7 +586,10 @@ class ParkingApp:
                         and not hasattr(self.waiting_lane, "sync_from_projection")):
                     self.waiting_lane.remove_vehicle(vehicle_id)
                 if slot_key is not None and vehicle_id is not None:
-                    self.parking_grid.occupy_slot(slot_key, vehicle_id, vehicle_plate)
+                    if hasattr(self.parking_grid, "assign_slot"):
+                        self.parking_grid.assign_slot(slot_key, vehicle_id, vehicle_plate)
+                    else:
+                        self.parking_grid.occupy_slot(slot_key, vehicle_id, vehicle_plate)
                 self._sync_tracking_views(vehicle_id)
                 self._update_display_counters()
 

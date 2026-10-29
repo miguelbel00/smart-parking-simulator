@@ -16,6 +16,8 @@ from ui.components.theme import (
     COLOR_OCCUPIED_BG,
     COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
+    COLOR_WAITING,
+    COLOR_WAITING_BG,
     PARKING_SPACE_ICON_PATH,
     _load_png_icon,
     font_family,
@@ -43,6 +45,7 @@ class ParkingSlotWidget(tk.Frame):
         self.space_id = space_id
         self.occupied_by: int | None = None
         self.plate: str | None = None
+        self._assignment_generation = 0
         self._img_available = _load_png_icon(self, PARKING_SPACE_ICON_PATH, subsample=2)
         self._img_occupied = _load_png_icon(self, CAR_OCCUPIED_ICON_PATH, subsample=2)
         self._has_icons = (
@@ -105,6 +108,7 @@ class ParkingSlotWidget(tk.Frame):
 
     def set_occupied(self, vehicle_id: int, plate: str | None = None) -> None:
         """Mark slot as occupied by a vehicle request."""
+        self._assignment_generation += 1
         self.occupied_by = vehicle_id
         self.plate = plate
         self.config(highlightbackground=COLOR_OCCUPIED, highlightthickness=2)
@@ -124,6 +128,7 @@ class ParkingSlotWidget(tk.Frame):
 
     def set_available(self) -> None:
         """Mark slot as free when the vehicle leaves."""
+        self._assignment_generation += 1
         self.occupied_by = None
         self.plate = None
         self.config(highlightbackground=COLOR_BORDER, highlightthickness=2)
@@ -140,6 +145,34 @@ class ParkingSlotWidget(tk.Frame):
             text="Libre",
             fg=COLOR_TEXT_MUTED,
         )
+
+    def set_assigning(self, vehicle_id: int, plate: str | None = None) -> None:
+        """Show a brief UI-only assignment state before confirming occupancy."""
+        self._assignment_generation += 1
+        generation = self._assignment_generation
+        self.occupied_by = None
+        self.plate = plate
+        self.config(highlightbackground=COLOR_WAITING, highlightthickness=2)
+        if self._has_icons:
+            self._lbl_icon.config(image=self._img_available, text="")
+        else:
+            self._lbl_icon.config(text="...")
+        self._lbl_status.config(
+            text="ASIGNANDO",
+            bg=COLOR_WAITING_BG,
+            fg=COLOR_WAITING,
+        )
+        self._lbl_detail.config(
+            text=f"{plate} (#{vehicle_id})" if plate else f"Auto #{vehicle_id}",
+            fg=COLOR_TEXT_PRIMARY,
+        )
+        self.after(900, lambda: self._finish_assignment(generation, vehicle_id, plate))
+
+    def _finish_assignment(
+        self, generation: int, vehicle_id: int, plate: str | None
+    ) -> None:
+        if generation == self._assignment_generation:
+            self.set_occupied(vehicle_id, plate)
 
     def reset(self) -> None:
         """Reset slot back to available state."""
@@ -179,6 +212,10 @@ class ParkingLotGridWidget(tk.Frame):
     def occupy_slot(self, slot_key: int, vehicle_id: int, plate: str | None = None) -> None:
         """Mark a projected, 1-based display slot as occupied."""
         self.slots[slot_key].set_occupied(vehicle_id, plate)
+
+    def assign_slot(self, slot_key: int, vehicle_id: int, plate: str | None = None) -> None:
+        """Show assignment feedback before rendering the occupied state."""
+        self.slots[slot_key].set_assigning(vehicle_id, plate)
 
     def free_slot(self, slot_key: int) -> None:
         """Free a projected, 1-based display slot."""
