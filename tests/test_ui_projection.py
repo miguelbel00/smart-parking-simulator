@@ -28,6 +28,7 @@ class Slot:
         self.occupied_by = None
         self.plate = None
         self.assigning = None
+        self.authorized_plates = ()
 
     def set_occupied(self, vehicle_id: int, plate: str | None = None) -> None:
         self.occupied_by = vehicle_id
@@ -41,6 +42,9 @@ class Slot:
     def set_assigning(self, vehicle_id: int, plate: str | None = None) -> None:
         self.assigning = (vehicle_id, plate)
         self.plate = plate
+
+    def set_authorized_plates(self, plates: tuple[str, ...]) -> None:
+        self.authorized_plates = plates
 
     def reset(self) -> None:
         self.set_available()
@@ -94,6 +98,8 @@ def make_app() -> ParkingApp:
     app._shutdown_complete = False
     app._restart_polling = False
     app.capacity = 5
+    app._scenario_authorizations = {}
+    app._selected_scenario_name = None
     app.projection = ParkingProjection(5)
     app.parking_grid = make_grid()
     app.waiting_lane = Lane()
@@ -403,6 +409,161 @@ def test_entered_event_shows_assigning_state_before_occupancy():
     assert slot.occupied_by is None
 
 
+def test_grid_renders_authorized_plates_independently_of_occupancy():
+    grid = make_grid(capacity=2)
+    grid.set_authorizations({1: ("AAA-001", "BBB-002")})
+    assert grid.slots[1].authorized_plates == ("AAA-001", "BBB-002")
+    assert grid.slots[2].authorized_plates == ()
+    grid.occupy_slot(1, 9, "AAA-001")
+    assert grid.slots[1].occupied_by == 9
+    assert grid.slots[1].authorized_plates == ("AAA-001", "BBB-002")
+
+
+def test_selected_scenario_authorizations_update_the_grid():
+    app = make_app()
+    app._scenario_authorizations = {
+        "scenario-a": {1: ("AAA-001",)},
+        "scenario-b": {2: ("BBB-002",)},
+    }
+    app._selected_scenario_name = "scenario-b"
+    app._apply_selected_authorizations()
+    assert app.parking_grid.slots[1].authorized_plates == ()
+    assert app.parking_grid.slots[2].authorized_plates == ("BBB-002",)
+
+
+def test_authorization_card_shows_count_and_popup_plates_without_hiding_occupant():
+    app = ParkingApp(event_queue=Queue(), capacity=6)
+    try:
+        app.parking_grid.set_authorizations({1: ("AAA-001", "BBB-002", "CCC-003")})
+        slot = app.parking_grid.slots[1]
+        assert slot._lbl_authorized_count.cget("text") == "3 autorizados"
+        assert slot._btn_view_plates.cget("text") == "Ver placas"
+        assert slot._btn_view_plates.cget("state") == "normal"
+        assert slot._lbl_status.cget("text") == "DISPONIBLE"
+        assert not hasattr(slot, "_lbl_authorized_icon")
+
+        slot.set_occupied(17, "AAA-001")
+        assert slot._lbl_status.cget("text") == "OCUPADO"
+        assert slot._lbl_detail.cget("text") == "AAA-001 (#17)"
+        assert slot._lbl_authorized_count.cget("text") == "3 autorizados"
+
+        slot._btn_view_plates.invoke()
+        popup = slot._plate_window
+        assert popup is not None
+        try:
+            texts = []
+            pending = list(popup.winfo_children())
+            while pending:
+                widget = pending.pop()
+                pending.extend(widget.winfo_children())
+                if widget.winfo_class() == "Label":
+                    texts.append(widget.cget("text"))
+            assert "Espacio #1" in texts
+            assert {"AAA-001", "BBB-002", "CCC-003"}.issubset(texts)
+            assert popup.title() == "Autorizados"
+        finally:
+            popup.destroy()
+
+        empty_slot = app.parking_grid.slots[2]
+        assert empty_slot._lbl_authorized_count.cget("text") == "0 autorizados"
+        assert empty_slot._btn_view_plates.cget("state") == "disabled"
+        assert empty_slot._btn_view_plates.cget("bg") != slot._btn_view_plates.cget("bg")
+        empty_slot._btn_view_plates.invoke()
+        assert empty_slot._plate_window is None
+        assert all(
+            app.parking_grid.slots[space_id]._lbl_authorized_count.cget("text")
+            == ("3 autorizados" if space_id == 1 else "0 autorizados")
+            for space_id in range(1, 7)
+        )
+    finally:
+        app.root.destroy()
+
+
+def test_six_slot_grid_height_stays_stable_through_run_and_restart():
+    app = ParkingApp(event_queue=Queue(), capacity=6)
+    try:
+        app.root.update_idletasks()
+        initial_grid_height = app.parking_grid.winfo_height()
+        initial_slot_heights = tuple(
+            slot.winfo_height() for slot in app.parking_grid.slots.values()
+        )
+        assert max(initial_slot_heights) - min(initial_slot_heights) <= 1
+
+        def assert_stable_geometry():
+            app.root.update_idletasks()
+            assert app.parking_grid.winfo_height() == initial_grid_height
+            slots = tuple(app.parking_grid.slots.values())
+            assert tuple(slot.winfo_height() for slot in slots) == initial_slot_heights
+            assert all(slot.winfo_height() >= slot.winfo_reqheight() for slot in slots)
+            assert all(
+                slot._btn_view_plates.winfo_rooty() + slot._btn_view_plates.winfo_height()
+                <= slot.winfo_rooty() + slot.winfo_height()
+                for slot in slots
+            )
+
+        app._dispatch_event(event("SIMULATION_STARTED"))
+        assert_stable_geometry()
+        app._dispatch_event(event("VEHICLE_ENTERED", 1, 0, plate="AAA-001"))
+        assert_stable_geometry()
+        slot = app.parking_grid.slots[1]
+        slot._finish_assignment(slot._assignment_generation, 1, "AAA-001")
+        assert_stable_geometry()
+        app._dispatch_event(event("VEHICLE_EXITED", 1, 0, plate="AAA-001"))
+        assert_stable_geometry()
+        app._dispatch_event(event("VEHICLE_FINISHED", 1, plate="AAA-001"))
+        app._dispatch_event(event("SIMULATION_FINISHED"))
+        assert_stable_geometry()
+        app._dispatch_event(event("SIMULATION_STARTED"))
+        assert_stable_geometry()
+    finally:
+        app.root.destroy()
+
+
+def test_parking_slot_focus_highlights_follow_theme_and_preserve_keyboard_focus():
+    from ui.components.theme import COLOR_BORDER, COLOR_INFO, COLOR_OCCUPIED, COLOR_WAITING
+
+    app = ParkingApp(event_queue=Queue(), capacity=6)
+    try:
+        slot = app.parking_grid.slots[1]
+        button = slot._btn_view_plates
+
+        assert slot.cget("highlightcolor") == COLOR_BORDER
+        assert button.cget("highlightcolor") == COLOR_INFO
+        assert button.cget("takefocus") != "0"
+
+        slot.set_assigning(1, "AAA-001")
+        assert slot.cget("highlightbackground") == COLOR_WAITING
+        assert slot.cget("highlightcolor") == COLOR_WAITING
+        slot.set_occupied(1, "AAA-001")
+        assert slot.cget("highlightbackground") == COLOR_OCCUPIED
+        assert slot.cget("highlightcolor") == COLOR_OCCUPIED
+        slot.set_available()
+        assert slot.cget("highlightbackground") == COLOR_BORDER
+        assert slot.cget("highlightcolor") == COLOR_BORDER
+
+        app.parking_grid.set_authorizations({1: ("AAA-001",)})
+        for _ in range(3):
+            button.focus_set()
+            app.root.update()
+            assert app.root.focus_get() == button
+            popup = slot._show_authorized_plates()
+            app.root.update()
+            assert popup.winfo_exists()
+            popup.destroy()
+            slot._plate_window = None
+            app.root.update()
+            assert app.root.focus_get() == button
+            assert button.cget("highlightcolor") == COLOR_INFO
+
+            app._dispatch_event(event("SIMULATION_STARTED"))
+            app._dispatch_event(event("SIMULATION_FINISHED"))
+            app.root.update()
+            assert slot.cget("highlightbackground") == COLOR_BORDER
+            assert slot.cget("highlightcolor") == COLOR_BORDER
+    finally:
+        app.root.destroy()
+
+
 def test_lifecycle_start_clears_visual_residues_and_loads_fresh_run_metrics():
     app = make_app()
     app._dispatch_event(event("VEHICLE_ENTERED", 1, 0, plate="OLD"))
@@ -621,10 +782,11 @@ def test_parking_app_builds_kpi_cards_with_real_tk() -> None:
         assert slot.plate == "REAL-34"
         assert slot._lbl_detail.cget("text") == "REAL-34 (#34)"
         assert slot._lbl_id.cget("text") == "Espacio #1"
-        assert app.card_occupied.subtitle == "de 6 (5 libres)"
+        assert app.card_occupied.subtitle == ""
+        assert app.card_available.value == "5"
         app._dispatch_event(event("VEHICLE_EXITED", 34, 0, plate="REAL-34"))
         assert slot.plate is None
-        assert app.card_occupied.subtitle == "de 6 (6 libres)"
+        assert app.card_available.value == "6"
         app._dispatch_event(event("VEHICLE_ENTERED", 35, 0))
         assert slot.plate is None
         assert slot._lbl_detail.cget("text") == "Auto #35"

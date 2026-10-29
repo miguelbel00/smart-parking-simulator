@@ -40,7 +40,7 @@ def test_main_composes_ipc_controller_with_validated_payload(monkeypatch, tmp_pa
 
     class FakeApp:
         def __init__(self, event_queue, simulator, capacity,
-                     scenario_options, on_scenario_selected):
+                     scenario_options, scenario_authorizations, on_scenario_selected):
             assert event_queue is observed["queue"]
             assert capacity == observed["capacity"]
             assert set(scenario_options) == {
@@ -48,6 +48,8 @@ def test_main_composes_ipc_controller_with_validated_payload(monkeypatch, tmp_pa
                 "capacity_saturation_and_release",
                 "normal_entry_and_exit",
             }
+            assert scenario_authorizations[None] == {1: ("EDU-001",)}
+            assert scenario_authorizations["authorization_rejections"]
             on_scenario_selected("normal_entry_and_exit")
             observed["selected_payload"] = observed["payload_factory"]()
         def run(self): pass

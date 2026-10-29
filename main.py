@@ -44,6 +44,22 @@ def main() -> None:
             )
             for scenario in scenario_summaries
         }
+        def display_authorizations(records: list[dict]) -> dict[int, tuple[str, ...]]:
+            by_slot: dict[int, list[str]] = {}
+            for record in records:
+                if record["authorized"] and record["space_id"] is not None:
+                    by_slot.setdefault(record["space_id"] + 1, []).append(record["plate"])
+            return {slot: tuple(plates) for slot, plates in by_slot.items()}
+
+        scenario_authorizations = {
+            None: display_authorizations(payload["authorization"]["vehicles"]),
+            **{
+                scenario.name: display_authorizations(
+                    build_payload(scenario.name)["authorization"]["vehicles"]
+                )
+                for scenario in scenario_summaries
+            },
+        }
         supported_capacities = {
             config.PARKING_CAPACITY,
             *(capacity for _, capacity in scenario_options.values()),
@@ -70,6 +86,7 @@ def main() -> None:
             simulator=simulator,
             capacity=config.PARKING_CAPACITY,
             scenario_options=scenario_options,
+            scenario_authorizations=scenario_authorizations,
             on_scenario_selected=select_scenario,
         )
         app.run()

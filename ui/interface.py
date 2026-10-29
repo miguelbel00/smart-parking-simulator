@@ -61,12 +61,14 @@ class ParkingApp:
         poll_interval_ms: int = 100,
         scenario_options: Mapping[str, tuple[str, int]] | None = None,
         on_scenario_selected: Callable[[str | None], None] | None = None,
+        scenario_authorizations: Mapping[str | None, Mapping[int, tuple[str, ...]]] | None = None,
     ) -> None:
         self.event_queue = event_queue
         self.simulator = simulator
         self.capacity = capacity
         self._default_capacity = capacity
         self._scenario_options = dict(scenario_options or {})
+        self._scenario_authorizations = dict(scenario_authorizations or {})
         self._on_scenario_selected_callback = on_scenario_selected
         self._selected_scenario_name: str | None = None
         self._selected_scenario_capacity = capacity
@@ -162,6 +164,7 @@ class ParkingApp:
         self.parking_grid.grid_propagate(False)
         self.parking_grid.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         self.parking_grid.setup_slots(self.capacity)
+        self._apply_selected_authorizations()
         self.waiting_lane = WaitingQueueWidget(simulation_content)
         self.waiting_lane.pack_propagate(False)
         self.waiting_lane.grid(row=0, column=1, sticky="nsew", pady=5)
@@ -258,6 +261,14 @@ class ParkingApp:
             self._selected_scenario_capacity = self._scenario_options[name][1]
         if self._on_scenario_selected_callback is not None:
             self._on_scenario_selected_callback(name)
+        self._apply_selected_authorizations()
+
+    def _apply_selected_authorizations(self) -> None:
+        grid = getattr(self, "parking_grid", None)
+        if grid is not None:
+            grid.set_authorizations(
+                self._scenario_authorizations.get(self._selected_scenario_name, {})
+            )
 
     def _set_scenario_selector_enabled(self, enabled: bool) -> None:
         selector = getattr(self, "scenario_selector", None)
@@ -272,6 +283,7 @@ class ParkingApp:
         self.capacity = capacity
         self.projection = ParkingProjection(capacity)
         self.parking_grid.setup_slots(capacity)
+        self._apply_selected_authorizations()
         self.card_available.update_value(capacity)
         self.card_occupied.update_value(0)
         self.card_occupied.update_subtitle(f"de {capacity} ({capacity} libres)")
@@ -704,11 +716,9 @@ class ParkingApp:
         self.occupied_count = self.projection.occupied_count
         self.waiting_count = len(self.projection.waiting)
 
+        # Availability is already a separate KPI; packing a subtitle here
+        # changes the stats row height and steals vertical space from the grid.
         self.card_occupied.update_value(self.occupied_count)
-        if hasattr(self.card_occupied, "update_subtitle"):
-            self.card_occupied.update_subtitle(
-                f"de {self.capacity} ({self.projection.available_count} libres)"
-            )
         if hasattr(self, "card_available"):
             self.card_available.update_value(self.projection.available_count)
         if hasattr(self, "card_waiting"):

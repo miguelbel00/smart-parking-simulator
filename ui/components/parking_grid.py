@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from ui.components.theme import (
     CAR_OCCUPIED_ICON_PATH,
@@ -12,6 +12,8 @@ from ui.components.theme import (
     COLOR_BG_CARD,
     COLOR_BG_PRIMARY,
     COLOR_BORDER,
+    COLOR_INFO,
+    COLOR_INFO_BG,
     COLOR_OCCUPIED,
     COLOR_OCCUPIED_BG,
     COLOR_TEXT_MUTED,
@@ -37,6 +39,7 @@ class ParkingSlotWidget(tk.Frame):
             parent,
             bg=COLOR_BG_CARD,
             highlightbackground=COLOR_BORDER,
+            highlightcolor=COLOR_BORDER,
             highlightthickness=2,
             padx=8,
             pady=10,
@@ -106,12 +109,138 @@ class ParkingSlotWidget(tk.Frame):
         )
         self._lbl_detail.pack(anchor="center", pady=(2, 0))
 
+        self._lbl_authorized_count = tk.Label(
+            self,
+            text="0 autorizados",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_INFO,
+            font=(font_family(self), 8, "bold"),
+        )
+        self._lbl_authorized_count.pack(anchor="center", pady=(4, 0))
+        self._btn_view_plates = tk.Button(
+            self,
+            text="Ver placas",
+            command=self._show_authorized_plates,
+            bg=COLOR_INFO_BG,
+            fg=COLOR_INFO,
+            activebackground=COLOR_INFO,
+            activeforeground=COLOR_BG_PRIMARY,
+            disabledforeground=COLOR_TEXT_MUTED,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=COLOR_INFO,
+            highlightcolor=COLOR_INFO,
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            font=(font_family(self), 8, "bold"),
+        )
+        self._btn_view_plates.pack(anchor="center", pady=(2, 0))
+        self._authorized_plates: tuple[str, ...] = ()
+        self._plate_window: tk.Toplevel | None = None
+
+    def set_authorized_plates(self, plates: tuple[str, ...]) -> None:
+        """Render an authorization count independently from live occupancy."""
+        self._authorized_plates = tuple(plates)
+        count = len(self._authorized_plates)
+        noun = "autorizado" if count == 1 else "autorizados"
+        self._lbl_authorized_count.config(text=f"{count} {noun}")
+        enabled = count > 0
+        self._btn_view_plates.config(
+            state="normal" if enabled else "disabled",
+            bg=COLOR_INFO_BG if enabled else COLOR_BG_PRIMARY,
+            fg=COLOR_INFO if enabled else COLOR_TEXT_MUTED,
+            activebackground=COLOR_INFO if enabled else COLOR_BG_PRIMARY,
+            highlightbackground=COLOR_INFO if enabled else COLOR_BORDER,
+            cursor="hand2" if enabled else "arrow",
+        )
+
+    def _show_authorized_plates(self) -> tk.Toplevel:
+        """Open a dark popup with all plates authorized for this slot."""
+        if self._plate_window is not None:
+            try:
+                if self._plate_window.winfo_exists():
+                    self._plate_window.destroy()
+            except tk.TclError:
+                pass
+
+        popup = tk.Toplevel(self.winfo_toplevel())
+        self._plate_window = popup
+        popup.title("Autorizados")
+        popup.configure(bg=COLOR_BG_PRIMARY)
+        popup.resizable(False, False)
+        popup.transient(self.winfo_toplevel())
+
+        content = tk.Frame(popup, bg=COLOR_BG_PRIMARY, padx=18, pady=16)
+        content.pack(fill="both", expand=True)
+        tk.Label(
+            content,
+            text=f"Espacio #{self.space_id}",
+            bg=COLOR_BG_PRIMARY,
+            fg=COLOR_TEXT_PRIMARY,
+            font=(font_family(self), 13, "bold"),
+        ).pack(anchor="w")
+        count = len(self._authorized_plates)
+        subtitle = f"{count} vehículo autorizado" if count == 1 else f"{count} vehículos autorizados"
+        tk.Label(
+            content,
+            text=subtitle,
+            bg=COLOR_BG_PRIMARY,
+            fg=COLOR_TEXT_MUTED,
+            font=(font_family(self), 9),
+        ).pack(anchor="w", pady=(2, 12))
+
+        plates_grid = tk.Frame(content, bg=COLOR_BG_PRIMARY)
+        plates_grid.pack(fill="both", expand=True)
+        if self._authorized_plates:
+            for index, plate in enumerate(self._authorized_plates):
+                row, column = divmod(index, 2)
+                tk.Label(
+                    plates_grid,
+                    text=plate,
+                    bg=COLOR_BG_CARD,
+                    fg=COLOR_TEXT_PRIMARY,
+                    font=(font_family(self), 9, "bold"),
+                    padx=12,
+                    pady=8,
+                    anchor="center",
+                    wraplength=170,
+                    highlightbackground=COLOR_BORDER,
+                    highlightthickness=1,
+                ).grid(row=row, column=column, sticky="ew", padx=4, pady=4)
+            for column in range(2):
+                plates_grid.grid_columnconfigure(column, weight=1, uniform="plate")
+        else:
+            tk.Label(
+                plates_grid,
+                text="No hay placas autorizadas para este espacio.",
+                bg=COLOR_BG_CARD,
+                fg=COLOR_TEXT_MUTED,
+                font=(font_family(self), 9),
+                padx=12,
+                pady=12,
+                wraplength=280,
+            ).pack(fill="x")
+
+        popup.update_idletasks()
+        width, height = popup.winfo_reqwidth(), popup.winfo_reqheight()
+        parent = self.winfo_toplevel()
+        x = parent.winfo_rootx() + max(0, (parent.winfo_width() - width) // 2)
+        y = parent.winfo_rooty() + max(0, (parent.winfo_height() - height) // 2)
+        popup.geometry(f"{width}x{height}+{x}+{y}")
+        return popup
+
     def set_occupied(self, vehicle_id: int, plate: str | None = None) -> None:
         """Mark slot as occupied by a vehicle request."""
         self._assignment_generation += 1
         self.occupied_by = vehicle_id
         self.plate = plate
-        self.config(highlightbackground=COLOR_OCCUPIED, highlightthickness=2)
+        self.config(
+            highlightbackground=COLOR_OCCUPIED,
+            highlightcolor=COLOR_OCCUPIED,
+            highlightthickness=2,
+        )
         if self._has_icons:
             self._lbl_icon.config(image=self._img_occupied, text="")
         else:
@@ -131,7 +260,11 @@ class ParkingSlotWidget(tk.Frame):
         self._assignment_generation += 1
         self.occupied_by = None
         self.plate = None
-        self.config(highlightbackground=COLOR_BORDER, highlightthickness=2)
+        self.config(
+            highlightbackground=COLOR_BORDER,
+            highlightcolor=COLOR_BORDER,
+            highlightthickness=2,
+        )
         if self._has_icons:
             self._lbl_icon.config(image=self._img_available, text="")
         else:
@@ -152,7 +285,11 @@ class ParkingSlotWidget(tk.Frame):
         generation = self._assignment_generation
         self.occupied_by = None
         self.plate = plate
-        self.config(highlightbackground=COLOR_WAITING, highlightthickness=2)
+        self.config(
+            highlightbackground=COLOR_WAITING,
+            highlightcolor=COLOR_WAITING,
+            highlightthickness=2,
+        )
         if self._has_icons:
             self._lbl_icon.config(image=self._img_available, text="")
         else:
@@ -220,6 +357,13 @@ class ParkingLotGridWidget(tk.Frame):
     def free_slot(self, slot_key: int) -> None:
         """Free a projected, 1-based display slot."""
         self.slots[slot_key].set_available()
+
+    def set_authorizations(self, authorizations: Mapping[int, tuple[str, ...]]) -> None:
+        """Render the selected scenario's authorized plates per 1-based slot."""
+        if any(slot_key not in self.slots for slot_key in authorizations):
+            raise ValueError("Authorized slot is not present in the grid")
+        for slot_key, slot in self.slots.items():
+            slot.set_authorized_plates(authorizations.get(slot_key, ()))
 
     def sync_from_snapshot(self, occupied_spaces: Iterable[tuple[int, int]]) -> None:
         """Translate raw core snapshot pairs once, then render display slots."""
