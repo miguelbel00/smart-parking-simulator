@@ -1,152 +1,152 @@
 {
   "vehicles": [
     {
-      "plate": "NORM-001",
+      "plate": "ASL-428",
       "authorized": true,
       "space_id": 0
     },
     {
-      "plate": "NORM-002",
+      "plate": "VTF-849",
       "authorized": true,
       "space_id": 1
     },
     {
-      "plate": "NORM-003",
+      "plate": "VNC-427",
       "authorized": true,
       "space_id": 2
     },
     {
-      "plate": "NORM-004",
+      "plate": "BUD-856",
       "authorized": true,
       "space_id": 3
     },
     {
-      "plate": "NORM-005",
+      "plate": "VGW-990",
       "authorized": true,
       "space_id": 4
     },
     {
-      "plate": "NORM-006",
+      "plate": "NBB-386",
       "authorized": true,
       "space_id": 5
     },
     {
-      "plate": "NORM-007",
+      "plate": "PIA-160",
       "authorized": true,
       "space_id": 0
     },
     {
-      "plate": "NORM-008",
+      "plate": "IPZ-354",
       "authorized": true,
       "space_id": 1
     },
     {
-      "plate": "NORM-009",
+      "plate": "HVG-983",
       "authorized": true,
       "space_id": 2
     },
     {
-      "plate": "NORM-010",
+      "plate": "DFK-846",
       "authorized": true,
       "space_id": 3
     },
     {
-      "plate": "NORM-011",
+      "plate": "QZJ-586",
       "authorized": true,
       "space_id": 0
     },
     {
-      "plate": "NORM-012",
+      "plate": "ULP-109",
       "authorized": true,
       "space_id": 1
     },
     {
-      "plate": "NORM-013",
+      "plate": "SOJ-773",
       "authorized": true,
       "space_id": 2
     },
     {
-      "plate": "NORM-014",
+      "plate": "IHG-940",
       "authorized": true,
       "space_id": 3
     },
     {
-      "plate": "NORM-015",
+      "plate": "MPI-027",
       "authorized": true,
       "space_id": 4
     },
     {
-      "plate": "NORM-016",
+      "plate": "QPI-189",
       "authorized": true,
       "space_id": 5
     },
     {
-      "plate": "NORM-017",
+      "plate": "LBN-602",
       "authorized": true,
       "space_id": 0
     },
     {
-      "plate": "NORM-018",
+      "plate": "CRV-483",
       "authorized": true,
       "space_id": 1
     },
     {
-      "plate": "NORM-019",
+      "plate": "LXZ-440",
       "authorized": true,
       "space_id": 2
     },
     {
-      "plate": "NORM-020",
+      "plate": "FSG-462",
       "authorized": true,
       "space_id": 3
     },
     {
-      "plate": "NORM-021",
+      "plate": "OFO-331",
       "authorized": true,
       "space_id": 0
     },
     {
-      "plate": "NORM-022",
+      "plate": "PAL-133",
       "authorized": true,
       "space_id": 1
     },
     {
-      "plate": "NORM-023",
+      "plate": "RLW-256",
       "authorized": true,
       "space_id": 2
     },
     {
-      "plate": "NORM-024",
+      "plate": "PGO-038",
       "authorized": true,
       "space_id": 3
     },
     {
-      "plate": "NORM-025",
+      "plate": "BBL-111",
       "authorized": true,
       "space_id": 4
     },
     {
-      "plate": "NORM-026",
+      "plate": "NZW-942",
       "authorized": true,
       "space_id": 5
     },
     {
-      "plate": "NORM-027",
+      "plate": "QTA-202",
       "authorized": true,
       "space_id": 0
     },
     {
-      "plate": "NORM-028",
+      "plate": "MMB-124",
       "authorized": true,
       "space_id": 1
     },
     {
-      "plate": "NORM-029",
+      "plate": "DFD-476",
       "authorized": true,
       "space_id": 2
     },
     {
-      "plate": "NORM-030",
+      "plate": "DYH-037",
       "authorized": true,
       "space_id": 3
     }

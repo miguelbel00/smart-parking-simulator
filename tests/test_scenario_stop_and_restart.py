@@ -183,7 +183,7 @@ def test_restart_runs_are_independent():
     # Vehicle numbering restarts at 1 for the new run rather than continuing
     # from run 1's count.
     created_first = next(event for event in events_2
-                         if event["name"] == VEHICLE_CREATED and event["payload"]["plate"] == "CAP-A")
+                         if event["name"] == VEHICLE_CREATED and event["payload"]["plate"] == "QDQ-021")
     assert created_first["payload"]["vehicle_id"] == 1
 
     # Core occupancy/Semaphore state did not carry over: run 2 reaches the

@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from simulation.authorizations import load_authorizations
@@ -93,9 +95,25 @@ def test_academic_payloads_use_six_spaces_and_the_requested_sequences():
 
     assert authorization["config"]["capacity"] == 6
     assert authorization["plate_sequence"] == [
-        "AUTH-A", "AUTH-B-UNKNOWN", "AUTH-C", "AUTH-A", "AUTH-D",
+        "OND-830", "BZO-132", "NGX-553", "OND-830", "CWR-850",
     ]
     assert capacity["config"]["capacity"] == 6
-    assert capacity["plate_sequence"] == ["CAP-A", "CAP-B", "CAP-C", "CAP-D", "CAP-E", "CAP-F", "G", "H", "I"]
+    assert capacity["plate_sequence"] == [
+        "QDQ-021", "YQO-792", "UHD-319", "INZ-019", "FFQ-932", "PVD-377",
+        "BIV-976", "ZON-782", "JJK-247",
+    ]
     assert lifecycle["config"]["capacity"] == 6
     assert len(lifecycle["plate_sequence"]) > 6
+
+
+def test_academic_scenario_plates_use_static_aaa_000_values():
+    plate_pattern = re.compile(r"[A-Z]{3}-[0-9]{3}")
+    expected_unknown = {"authorization_rejections": {"BZO-132"}}
+
+    for scenario in list_academic_scenarios():
+        payload = build_payload(scenario.name)
+        sequence = payload["plate_sequence"]
+        authorized = {record["plate"] for record in payload["authorization"]["vehicles"]}
+
+        assert all(plate_pattern.fullmatch(plate) for plate in sequence)
+        assert set(sequence) - authorized == expected_unknown.get(scenario.name, set())

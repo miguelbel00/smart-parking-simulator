@@ -130,8 +130,8 @@ def _assert_authorization_rejection_invariants(events, event_type, vehicle_id, p
         return next(index for index, event in enumerate(events)
                     if event_type(event) == kind and plate_of(event) == wanted_plate)
 
-    assert index_of(VEHICLE_WAITING, "AUTH-D") < index_of(VEHICLE_ENTERED, "AUTH-D")
-    assert index_of(VEHICLE_EXITED, "AUTH-A") < index_of(VEHICLE_ENTERED, "AUTH-D")
+    assert index_of(VEHICLE_WAITING, "CWR-850") < index_of(VEHICLE_ENTERED, "CWR-850")
+    assert index_of(VEHICLE_EXITED, "OND-830") < index_of(VEHICLE_ENTERED, "CWR-850")
 
     rejected = {
         vehicle_id(event): reason(event)

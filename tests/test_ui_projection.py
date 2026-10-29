@@ -649,13 +649,23 @@ def test_scenario_selector_uses_idle_gate_and_resizes_for_selected_run() -> None
         event_queue=Queue(),
         simulator=adapter,
         capacity=5,
-        scenario_options={"normal_entry_and_exit": ("Ingreso y salida normales", 1)},
+        scenario_options={
+            "authorization_rejections": ("Control de acceso", 5),
+            "normal_entry_and_exit": ("Multiprocessing e IPC", 1),
+        },
         on_scenario_selected=selected.append,
     )
     try:
+        assert tuple(app.scenario_selector.cget("values")) == (
+            "Control de acceso · 5 puestos",
+            "Multiprocessing e IPC · 1 puestos",
+        )
+        assert app._scenario_var.get() == "Control de acceso · 5 puestos"
+        assert selected == ["authorization_rejections"]
+
         app.scenario_selector.current(1)
         app._handle_scenario_selection()
-        assert selected == ["normal_entry_and_exit"]
+        assert selected == ["authorization_rejections", "normal_entry_and_exit"]
 
         app._start_simulation()
         assert str(app.scenario_selector.cget("state")) == "disabled"

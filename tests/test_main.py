@@ -56,11 +56,10 @@ def test_main_composes_ipc_controller_with_validated_payload(monkeypatch, tmp_pa
     monkeypatch.setattr(entry, "MultiprocessGUIAdapter", FakeAdapter)
     monkeypatch.setattr(entry, "ParkingApp", FakeApp)
     entry.main()
-    assert observed["payload"]["plate_sequence"] == ["EDU-001", "EDU-002"]
-    assert observed["payload"]["authorization"]["vehicles"] == [
-        {"plate": "EDU-001", "authorized": True, "space_id": 0}
+    assert observed["payload"]["plate_sequence"] == [
+        "OND-830", "BZO-132", "NGX-553", "OND-830", "CWR-850",
     ]
-    assert observed["payload"]["config"]["capacity"] == observed["capacity"]
+    assert observed["payload"]["config"]["capacity"] == 6
     assert observed["selected_payload"]["config"]["capacity"] == 6
     assert observed["supported_capacities"] == {6}
 

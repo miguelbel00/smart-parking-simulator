@@ -1,13 +1,13 @@
 {
   "vehicles": [
-    {"plate": "CAP-A", "authorized": true, "space_id": 0},
-    {"plate": "CAP-B", "authorized": true, "space_id": 1},
-    {"plate": "CAP-C", "authorized": true, "space_id": 2},
-    {"plate": "CAP-D", "authorized": true, "space_id": 3},
-    {"plate": "CAP-E", "authorized": true, "space_id": 4},
-    {"plate": "CAP-F", "authorized": true, "space_id": 5},
-    {"plate": "G", "authorized": true, "space_id": 0},
-    {"plate": "H", "authorized": true, "space_id": 0},
-    {"plate": "I", "authorized": true, "space_id": 0}
+    {"plate": "QDQ-021", "authorized": true, "space_id": 0},
+    {"plate": "YQO-792", "authorized": true, "space_id": 1},
+    {"plate": "UHD-319", "authorized": true, "space_id": 2},
+    {"plate": "INZ-019", "authorized": true, "space_id": 3},
+    {"plate": "FFQ-932", "authorized": true, "space_id": 4},
+    {"plate": "PVD-377", "authorized": true, "space_id": 5},
+    {"plate": "BIV-976", "authorized": true, "space_id": 0},
+    {"plate": "ZON-782", "authorized": true, "space_id": 0},
+    {"plate": "JJK-247", "authorized": true, "space_id": 0}
   ]
 }

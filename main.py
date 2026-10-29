@@ -48,7 +48,7 @@ def main() -> None:
             config.PARKING_CAPACITY,
             *(capacity for _, capacity in scenario_options.values()),
         }
-        selected_scenario: dict[str, str | None] = {"name": None}
+        selected_scenario: dict[str, str | None] = {"name": scenario_summaries[0].name}
 
         def payload_factory() -> dict:
             name = selected_scenario["name"]

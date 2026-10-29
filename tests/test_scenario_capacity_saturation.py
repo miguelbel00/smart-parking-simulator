@@ -132,7 +132,7 @@ def _assert_capacity_saturation_invariants(events, capacity, entered_plate, ente
 
     # The first six vehicles occupy the six distinct authorized slots before
     # any waiter can enter.
-    for plate in ("CAP-A", "CAP-B", "CAP-C", "CAP-D", "CAP-E", "CAP-F"):
+    for plate in ("QDQ-021", "YQO-792", "UHD-319", "INZ-019", "FFQ-932", "PVD-377"):
         entered_at = index_of(VEHICLE_ENTERED, plate)
         waiting_before = [
             index for index, event in enumerate(events)
@@ -142,13 +142,14 @@ def _assert_capacity_saturation_invariants(events, capacity, entered_plate, ente
 
     # G, H, and I contend for slot 0 and must enter in acceptance order, each
     # after the preceding occupant of that same slot exits.
-    for plate in ("G", "H", "I"):
+    for plate in ("BIV-976", "ZON-782", "JJK-247"):
         assert index_of(VEHICLE_WAITING, plate) < index_of(VEHICLE_ENTERED, plate)
-    assert index_of(VEHICLE_EXITED, "CAP-A") < index_of(VEHICLE_ENTERED, "G")
-    assert index_of(VEHICLE_EXITED, "G") < index_of(VEHICLE_ENTERED, "H")
-    assert index_of(VEHICLE_EXITED, "H") < index_of(VEHICLE_ENTERED, "I")
+    assert index_of(VEHICLE_EXITED, "QDQ-021") < index_of(VEHICLE_ENTERED, "BIV-976")
+    assert index_of(VEHICLE_EXITED, "BIV-976") < index_of(VEHICLE_ENTERED, "ZON-782")
+    assert index_of(VEHICLE_EXITED, "ZON-782") < index_of(VEHICLE_ENTERED, "JJK-247")
     assert [entered_plate(event) for event in events if event_type(event) == VEHICLE_ENTERED] == [
-        "CAP-A", "CAP-B", "CAP-C", "CAP-D", "CAP-E", "CAP-F", "G", "H", "I",
+        "QDQ-021", "YQO-792", "UHD-319", "INZ-019", "FFQ-932", "PVD-377",
+        "BIV-976", "ZON-782", "JJK-247",
     ]
 
     # Mutual exclusion per slot, and simultaneous peak occupancy reconstructed

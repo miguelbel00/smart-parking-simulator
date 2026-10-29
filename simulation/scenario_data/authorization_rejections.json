@@ -1,7 +1,7 @@
 {
   "vehicles": [
-    {"plate": "AUTH-A", "authorized": true, "space_id": 0},
-    {"plate": "AUTH-C", "authorized": true, "space_id": 1},
-    {"plate": "AUTH-D", "authorized": true, "space_id": 0}
+    {"plate": "OND-830", "authorized": true, "space_id": 0},
+    {"plate": "NGX-553", "authorized": true, "space_id": 1},
+    {"plate": "CWR-850", "authorized": true, "space_id": 0}
   ]
 }

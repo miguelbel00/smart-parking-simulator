@@ -230,11 +230,11 @@ class ParkingApp:
             font=(font_family(self.root), 9, "bold"),
         ).pack(side="left", padx=(0, 10))
 
-        default_label = "Configuración predeterminada"
-        self._scenario_by_label = {default_label: None}
+        self._scenario_by_label = {}
         for name, (title, capacity) in self._scenario_options.items():
             self._scenario_by_label[f"{title} · {capacity} puestos"] = name
-        self._scenario_var = tk.StringVar(value=default_label)
+        initial_label = next(iter(self._scenario_by_label))
+        self._scenario_var = tk.StringVar(value=initial_label)
         self.scenario_selector = ttk.Combobox(
             selector_row,
             textvariable=self._scenario_var,
@@ -244,6 +244,7 @@ class ParkingApp:
         )
         self.scenario_selector.pack(side="left", fill="x", expand=True)
         self.scenario_selector.bind("<<ComboboxSelected>>", self._handle_scenario_selection)
+        self._handle_scenario_selection()
 
     def _handle_scenario_selection(self, _event: Any = None) -> None:
         """Record selection on Tk's thread; the adapter reads it when Start is pressed."""
