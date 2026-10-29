@@ -3,7 +3,7 @@ import pytest
 from simulation.authorizations import load_authorizations
 from simulation.config import PARKING_CAPACITY
 from simulation.ipc_protocol import validate_start_payload
-from simulation.scenarios import build_payload, get_scenario, list_scenarios
+from simulation.scenarios import build_payload, get_scenario, list_academic_scenarios, list_scenarios
 
 
 def test_fifo_per_slot_payload_matches_the_real_ipc_contract():
@@ -41,7 +41,7 @@ def test_all_scenarios_use_the_configured_parking_capacity():
         assert build_payload(scenario.name)["config"]["capacity"] == 6
 
 
-def test_normal_entry_and_exit_payload_has_gradual_arrivals_and_long_stays():
+def test_multiprocessing_lifecycle_payload_has_realistic_concurrent_activity():
     payload = build_payload("normal_entry_and_exit")
 
     assert len(payload["plate_sequence"]) == 30
@@ -52,7 +52,9 @@ def test_normal_entry_and_exit_payload_has_gradual_arrivals_and_long_stays():
     assert payload["config"]["max_parking_time"] == 12
     assert len(payload["authorization"]["vehicles"]) == 30
     assert validate_start_payload(payload) == payload
-    assert "capacidad fija de 6 puestos" in get_scenario("normal_entry_and_exit").academic_requirement
+    requirement = get_scenario("normal_entry_and_exit").academic_requirement
+    assert "multiprocessing" in requirement
+    assert "IPC real" in requirement
 
 
 def test_get_unknown_scenario_raises():
@@ -67,3 +69,33 @@ def test_list_scenarios_exposes_fifo_per_slot_with_its_editable_fields():
     assert summary.editable_fields == (
         "max_arrival_time", "max_parking_time", "min_arrival_time", "min_parking_time",
     )
+
+
+def test_academic_selector_exposes_exactly_the_three_requested_scenarios():
+    scenarios = list_academic_scenarios()
+
+    assert [scenario.name for scenario in scenarios] == [
+        "authorization_rejections",
+        "capacity_saturation_and_release",
+        "normal_entry_and_exit",
+    ]
+    assert [scenario.title for scenario in scenarios] == [
+        "Escenario 1 — Control de acceso y autorizaciones",
+        "Escenario 2 — Concurrencia, capacidad y FIFO",
+        "Escenario 3 — Multiprocessing, IPC y ciclo de vida",
+    ]
+
+
+def test_academic_payloads_use_six_spaces_and_the_requested_sequences():
+    authorization = build_payload("authorization_rejections")
+    capacity = build_payload("capacity_saturation_and_release")
+    lifecycle = build_payload("normal_entry_and_exit")
+
+    assert authorization["config"]["capacity"] == 6
+    assert authorization["plate_sequence"] == [
+        "AUTH-A", "AUTH-B-UNKNOWN", "AUTH-C", "AUTH-A", "AUTH-D",
+    ]
+    assert capacity["config"]["capacity"] == 6
+    assert capacity["plate_sequence"] == ["CAP-A", "CAP-B", "CAP-C", "CAP-D", "CAP-E", "CAP-F", "G", "H", "I"]
+    assert lifecycle["config"]["capacity"] == 6
+    assert len(lifecycle["plate_sequence"]) > 6

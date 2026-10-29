@@ -7,7 +7,7 @@ from simulation import config
 from simulation.audit_logging import AuditSession
 from simulation.authorizations import load_authorizations
 from simulation.multiprocess import MultiprocessController
-from simulation.scenarios import build_payload, get_scenario, list_scenarios
+from simulation.scenarios import build_payload, get_scenario, list_academic_scenarios
 from ui.interface import ParkingApp
 from ui.multiprocess_adapter import MultiprocessGUIAdapter
 
@@ -36,7 +36,7 @@ def main() -> None:
             ]},
             "plate_sequence": list(config.PLATE_SEQUENCE),
         }
-        scenario_summaries = list_scenarios()
+        scenario_summaries = list_academic_scenarios()
         scenario_options = {
             scenario.name: (
                 scenario.title,

@@ -130,9 +130,9 @@ def _assert_capacity_saturation_invariants(events, capacity, entered_plate, ente
         return next(i for i, event in enumerate(events)
                     if event_type(event) == name and entered_plate(event) == plate)
 
-    # SAT-A, SAT-B, SAT-C find their authorized slot free on arrival: no
-    # WAITING precedes their ENTERED.
-    for plate in ("SAT-A", "SAT-B", "SAT-C"):
+    # The first six vehicles occupy the six distinct authorized slots before
+    # any waiter can enter.
+    for plate in ("CAP-A", "CAP-B", "CAP-C", "CAP-D", "CAP-E", "CAP-F"):
         entered_at = index_of(VEHICLE_ENTERED, plate)
         waiting_before = [
             index for index, event in enumerate(events)
@@ -140,14 +140,16 @@ def _assert_capacity_saturation_invariants(events, capacity, entered_plate, ente
         ]
         assert not waiting_before, f"{plate} should not wait before entering"
 
-    # SAT-D (slot 0) and SAT-E (slot 1) each wait, and only enter once the
-    # earlier occupant of their *own* slot has exited - not on any other
-    # vehicle's departure.
-    assert index_of(VEHICLE_WAITING, "SAT-D") < index_of(VEHICLE_ENTERED, "SAT-D")
-    assert index_of(VEHICLE_EXITED, "SAT-A") < index_of(VEHICLE_ENTERED, "SAT-D")
-
-    assert index_of(VEHICLE_WAITING, "SAT-E") < index_of(VEHICLE_ENTERED, "SAT-E")
-    assert index_of(VEHICLE_EXITED, "SAT-B") < index_of(VEHICLE_ENTERED, "SAT-E")
+    # G, H, and I contend for slot 0 and must enter in acceptance order, each
+    # after the preceding occupant of that same slot exits.
+    for plate in ("G", "H", "I"):
+        assert index_of(VEHICLE_WAITING, plate) < index_of(VEHICLE_ENTERED, plate)
+    assert index_of(VEHICLE_EXITED, "CAP-A") < index_of(VEHICLE_ENTERED, "G")
+    assert index_of(VEHICLE_EXITED, "G") < index_of(VEHICLE_ENTERED, "H")
+    assert index_of(VEHICLE_EXITED, "H") < index_of(VEHICLE_ENTERED, "I")
+    assert [entered_plate(event) for event in events if event_type(event) == VEHICLE_ENTERED] == [
+        "CAP-A", "CAP-B", "CAP-C", "CAP-D", "CAP-E", "CAP-F", "G", "H", "I",
+    ]
 
     # Mutual exclusion per slot, and simultaneous peak occupancy reconstructed
     # strictly from the real event stream (never exceeds and does reach
@@ -171,6 +173,6 @@ def _assert_capacity_saturation_invariants(events, capacity, entered_plate, ente
     assert concurrent == 0
     assert peak == capacity
 
-    assert sum(event_type(event) == VEHICLE_FINISHED for event in events) == 12
+    assert sum(event_type(event) == VEHICLE_FINISHED for event in events) == 9
     assert sum(event_type(event) == VEHICLE_REJECTED for event in events) == 0
     assert sum(event_type(event) == VEHICLE_CANCELLED for event in events) == 0

@@ -176,14 +176,14 @@ def test_restart_runs_are_independent():
 
     # The same plates are reused verbatim: zero rejections in run 2 proves
     # _active_plates did not leak across runs (a leak would collide on every
-    # plate, since all twelve were already "active" at the end of run 1 until
+    # plate, since all nine were already "active" at the end of run 1 until
     # each FINISHED and was discarded).
     assert sum(event["name"] == VEHICLE_REJECTED for event in events_2) == 0
 
     # Vehicle numbering restarts at 1 for the new run rather than continuing
     # from run 1's count.
     created_first = next(event for event in events_2
-                         if event["name"] == VEHICLE_CREATED and event["payload"]["plate"] == "SAT-A")
+                         if event["name"] == VEHICLE_CREATED and event["payload"]["plate"] == "CAP-A")
     assert created_first["payload"]["vehicle_id"] == 1
 
     # Core occupancy/Semaphore state did not carry over: run 2 reaches the

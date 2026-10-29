@@ -83,14 +83,15 @@ def test_authorization_rejections_in_process(monkeypatch):
         events,
         event_type=lambda event: event.type,
         vehicle_id=lambda event: event.vehicle_id,
+        plate_of=lambda event: event.plate,
         reason=lambda event: event.reason,
     )
 
     stats = metrics.snapshot()
-    assert stats["total_rejected"] == 3
-    assert stats["total_finished"] == 1
+    assert stats["total_rejected"] == 2
+    assert stats["total_finished"] == 3
     assert stats["total_cancelled"] == 0
-    assert stats["total_parked"] == 1
+    assert stats["total_parked"] == 3
 
 
 def test_authorization_rejections_via_multiprocess_controller_and_real_ipc():
@@ -116,29 +117,32 @@ def test_authorization_rejections_via_multiprocess_controller_and_real_ipc():
         events,
         event_type=lambda message: message["name"],
         vehicle_id=lambda message: message["payload"]["vehicle_id"],
+        plate_of=lambda message: message["payload"]["plate"],
         reason=lambda message: message["payload"]["reason"],
     )
 
 
-def _assert_authorization_rejection_invariants(events, event_type, vehicle_id, reason):
+def _assert_authorization_rejection_invariants(events, event_type, vehicle_id, plate_of, reason):
     assert event_type(events[-1]) == SIMULATION_FINISHED
 
-    # Capacity 1, and every other request is rejected synchronously inside
-    # admit() before it ever reaches the pending queue: nothing ever competes
-    # for slot 0, so no vehicle should ever be observed waiting.
-    assert sum(event_type(event) == VEHICLE_WAITING for event in events) == 0
+    # D is authorized only for slot 0. It must wait for A to release that slot.
+    def index_of(kind, wanted_plate):
+        return next(index for index, event in enumerate(events)
+                    if event_type(event) == kind and plate_of(event) == wanted_plate)
+
+    assert index_of(VEHICLE_WAITING, "AUTH-D") < index_of(VEHICLE_ENTERED, "AUTH-D")
+    assert index_of(VEHICLE_EXITED, "AUTH-A") < index_of(VEHICLE_ENTERED, "AUTH-D")
 
     rejected = {
         vehicle_id(event): reason(event)
         for event in events if event_type(event) == VEHICLE_REJECTED
     }
-    # vehicle_id 1 = first REJ-OK (accepted), 2 = REJ-DENIED, 3 = REJ-UNKNOWN,
-    # 4 = second REJ-OK (duplicate of the still-active first REJ-OK).
-    assert rejected == {2: "NOT_AUTHORIZED", 3: "UNKNOWN_PLATE", 4: "DUPLICATE_ACTIVE"}
+    # B is unknown; the second A request duplicates its active first request.
+    assert rejected == {2: "UNKNOWN_PLATE", 4: "DUPLICATE_ACTIVE"}
 
     entered = [event for event in events if event_type(event) == VEHICLE_ENTERED]
     exited = [event for event in events if event_type(event) == VEHICLE_EXITED]
     finished = [event for event in events if event_type(event) == VEHICLE_FINISHED]
-    assert [vehicle_id(event) for event in entered] == [1]
-    assert [vehicle_id(event) for event in exited] == [1]
-    assert [vehicle_id(event) for event in finished] == [1]
+    assert [vehicle_id(event) for event in entered] == [1, 3, 5]
+    assert [vehicle_id(event) for event in exited] == [1, 3, 5]
+    assert [vehicle_id(event) for event in finished] == [1, 3, 5]

@@ -240,7 +240,7 @@ class ParkingApp:
             textvariable=self._scenario_var,
             values=tuple(self._scenario_by_label),
             state="readonly",
-            width=42,
+            width=58,
         )
         self.scenario_selector.pack(side="left", fill="x", expand=True)
         self.scenario_selector.bind("<<ComboboxSelected>>", self._handle_scenario_selection)

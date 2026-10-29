@@ -68,23 +68,19 @@ FIFO_PER_SLOT = ScenarioDefinition(
 
 CAPACITY_SATURATION = ScenarioDefinition(
     name="capacity_saturation_and_release",
-    title="Saturacion de capacidad y liberacion concurrente",
+    title="Escenario 2 — Concurrencia, capacidad y FIFO",
     academic_requirement=(
-        "Capacidad maxima alcanzada sin excederla (invariante del "
-        "Semaphore), espera simultanea de distintas solicitudes por dos "
-        "puestos ocupados distintos, y liberacion con avance concurrente "
-        "e independiente por puesto cuando cada ocupante termina."
+        "Seis vehiculos ocupan las seis plazas. G, H e I esperan por la "
+        "plaza 1 y entran en ese orden tras cada liberacion, sin superar "
+        "la capacidad."
     ),
     capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "capacity_saturation_authorizations.json",
-    plate_sequence=(
-        "SAT-A", "SAT-B", "SAT-C", "SAT-F", "SAT-G", "SAT-H",
-        "SAT-I", "SAT-J", "SAT-K", "SAT-L", "SAT-D", "SAT-E",
-    ),
+    plate_sequence=("CAP-A", "CAP-B", "CAP-C", "CAP-D", "CAP-E", "CAP-F", "G", "H", "I"),
     min_arrival_time=0,
     max_arrival_time=0,
-    min_parking_time=4,
-    max_parking_time=4,
+    min_parking_time=8,
+    max_parking_time=8,
     editable_fields=frozenset({
         "min_arrival_time", "max_arrival_time",
         "min_parking_time", "max_parking_time",
@@ -93,17 +89,16 @@ CAPACITY_SATURATION = ScenarioDefinition(
 
 AUTHORIZATION_REJECTIONS = ScenarioDefinition(
     name="authorization_rejections",
-    title="Rechazos reales por autorizacion",
+    title="Escenario 1 — Control de acceso y autorizaciones",
     academic_requirement=(
-        "Rechazo de una placa desconocida (UNKNOWN_PLATE), rechazo de una "
-        "placa registrada pero no autorizada (NOT_AUTHORIZED), y rechazo de "
-        "una placa activa duplicada (DUPLICATE_ACTIVE) mientras su primera "
-        "solicitud sigue estacionada, todo evaluado por el AuthorizationRegistry "
-        "y ParkingLot.admit() reales, sin atajos."
+        "A ocupa la plaza 1, B es rechazada por placa desconocida, C ocupa "
+        "la plaza 2, la segunda solicitud de A se rechaza como duplicada y "
+        "D espera por la plaza 1 hasta que A sale. Las decisiones usan el "
+        "AuthorizationRegistry y ParkingLot.admit() reales."
     ),
     capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "authorization_rejections.json",
-    plate_sequence=("REJ-OK", "REJ-DENIED", "REJ-UNKNOWN", "REJ-OK"),
+    plate_sequence=("AUTH-A", "AUTH-B-UNKNOWN", "AUTH-C", "AUTH-A", "AUTH-D"),
     min_arrival_time=1,
     max_arrival_time=1,
     min_parking_time=5,
@@ -116,12 +111,11 @@ AUTHORIZATION_REJECTIONS = ScenarioDefinition(
 
 NORMAL_ENTRY_AND_EXIT = ScenarioDefinition(
     name="normal_entry_and_exit",
-    title="Flujo gradual de 30 vehiculos con espera y salida",
+    title="Escenario 3 — Multiprocessing, IPC y ciclo de vida",
     academic_requirement=(
-        "Flujo de 30 solicitudes autorizadas con capacidad fija de 6 "
-        "puestos, una llegada por segundo y 12 segundos de permanencia: "
-        "ocupacion completa, solicitudes pendientes visibles y finalizacion "
-        "natural tras liberar puestos, sin rechazos ni cancelaciones."
+        "Treinta solicitudes activan el motor multiprocessing y el transporte "
+        "IPC real. La actividad concurrente permite solicitar Stop desde la "
+        "interfaz y comenzar otra ejecucion independiente tras el drenaje."
     ),
     capacity=PARKING_CAPACITY,
     authorization_path=_SCENARIO_DATA_DIR / "normal_entry_and_exit.json",
@@ -177,6 +171,13 @@ def list_scenarios() -> tuple[ScenarioSummary, ...]:
                         tuple(sorted(scenario.editable_fields)))
         for scenario in _REGISTRY.values()
     )
+
+
+def list_academic_scenarios() -> tuple[ScenarioSummary, ...]:
+    """Return the three reproducible scenarios presented in the Tk selector."""
+    names = (AUTHORIZATION_REJECTIONS.name, CAPACITY_SATURATION.name, NORMAL_ENTRY_AND_EXIT.name)
+    summaries = {summary.name: summary for summary in list_scenarios()}
+    return tuple(summaries[name] for name in names)
 
 
 def get_scenario(name: str) -> ScenarioDefinition:

@@ -43,7 +43,11 @@ def test_main_composes_ipc_controller_with_validated_payload(monkeypatch, tmp_pa
                      scenario_options, on_scenario_selected):
             assert event_queue is observed["queue"]
             assert capacity == observed["capacity"]
-            assert "normal_entry_and_exit" in scenario_options
+            assert set(scenario_options) == {
+                "authorization_rejections",
+                "capacity_saturation_and_release",
+                "normal_entry_and_exit",
+            }
             on_scenario_selected("normal_entry_and_exit")
             observed["selected_payload"] = observed["payload_factory"]()
         def run(self): pass

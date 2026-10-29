@@ -1,6 +1,7 @@
 {
   "vehicles": [
-    {"plate": "REJ-OK", "authorized": true, "space_id": 0},
-    {"plate": "REJ-DENIED", "authorized": false, "space_id": null}
+    {"plate": "AUTH-A", "authorized": true, "space_id": 0},
+    {"plate": "AUTH-C", "authorized": true, "space_id": 1},
+    {"plate": "AUTH-D", "authorized": true, "space_id": 0}
   ]
 }
