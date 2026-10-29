@@ -1107,7 +1107,14 @@ def test_real_tkinter_mainloop_with_multiprocess_ipc_lifecycle() -> None:
     from ui.multiprocess_adapter import MultiprocessGUIAdapter
 
     event_queue: Queue = Queue()
-    state = {"run_index": 0, "stopped_first": False, "restarted": False, "completed_second": False}
+    state = {
+        "run_index": 0,
+        "start_accepted": False,
+        "lifecycle_watchdog_scheduled": False,
+        "stopped_first": False,
+        "restarted": False,
+        "completed_second": False,
+    }
 
     def make_payload() -> dict:
         state["run_index"] += 1
@@ -1153,6 +1160,18 @@ def test_real_tkinter_mainloop_with_multiprocess_ipc_lifecycle() -> None:
     adapter = MultiprocessGUIAdapter(controller, event_queue, make_payload)
     adapter.start_engine()
     app = ParkingApp(event_queue=event_queue, simulator=adapter, capacity=5)
+    original_poll_results = adapter.poll_results
+
+    def poll_results_and_watch_start(*args, **kwargs):
+        results = original_poll_results(*args, **kwargs)
+        if any(name == "START_ACCEPTED" for name, _, _ in results):
+            state["start_accepted"] = True
+            if not state["lifecycle_watchdog_scheduled"]:
+                state["lifecycle_watchdog_scheduled"] = True
+                app.root.after(30000, app._on_close)
+        return results
+
+    adapter.poll_results = poll_results_and_watch_start
 
     try:
         # Step 1: Start simulation inside real Tkinter event loop
@@ -1200,12 +1219,20 @@ def test_real_tkinter_mainloop_with_multiprocess_ipc_lifecycle() -> None:
             app.root.after(60, monitor_lifecycle)
 
         app.root.after(150, monitor_lifecycle)
-        app.root.after(10000, app._on_close)
+        # Bound engine startup separately from the lifecycle watchdog, which starts
+        # only after the transport confirms that START was accepted.
+        app.root.after(60000, app._on_close)
         app.run()
 
-        assert state["stopped_first"] is True
-        assert state["restarted"] is True
-        assert state["completed_second"] is True
+        diagnostics = (
+            f"state={state}, active={adapter.is_active()}, drained={adapter.is_drained()}, "
+            f"error={adapter.error!r}, transport_alive={adapter._thread.is_alive()}, "
+            f"engine_exitcode={controller._process.exitcode}, "
+            f"ui_queue_size={event_queue.qsize()}, status={app.control_bar.status_message!r}"
+        )
+        assert state["stopped_first"], f"first request was not observed; {diagnostics}"
+        assert state["restarted"], f"first run did not restart; {diagnostics}"
+        assert state["completed_second"], f"second run did not complete; {diagnostics}"
         assert adapter.is_drained() is True
     finally:
         if not adapter.shutdown_complete:
