@@ -179,33 +179,123 @@ class ParkingApp:
         self.request_table = RequestTrackingTableWidget(self.requests_view)
         self.request_table.pack(fill="both", expand=True)
 
+        self.telemetry_view.grid_columnconfigure(0, weight=1)
+        self.telemetry_view.grid_rowconfigure(2, weight=1)
+        header = tk.Frame(self.telemetry_view, bg=COLOR_BG_PRIMARY)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        header.grid_columnconfigure(0, weight=1)
+        scenario_title = next(
+            (title for name, (title, _capacity) in self._scenario_options.items()
+             if name == self._selected_scenario_name),
+            "Escenario predeterminado",
+        )
+        self._telemetry_scenario = tk.Label(
+            header, text=scenario_title, bg=COLOR_BG_PRIMARY,
+            fg=COLOR_TEXT_PRIMARY, font=(font_family(self.root), 14, "bold"), anchor="w",
+        )
+        self._telemetry_scenario.grid(row=0, column=0, sticky="w")
+        tk.Label(header, text="ANÁLISIS DE EJECUCIÓN", bg=COLOR_BG_PRIMARY,
+                 fg=COLOR_TEXT_MUTED, font=(font_family(self.root), 8, "bold")
+                 ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._telemetry_status = tk.Label(
+            header, text="● SIN EJECUCIÓN", bg=COLOR_BG_PRIMARY,
+            fg=COLOR_TEXT_MUTED, font=(font_family(self.root), 9, "bold"),
+        )
+        self._telemetry_status.grid(row=0, column=1, rowspan=2, sticky="e", padx=8)
+
+        self._telemetry_kpis = tk.Frame(self.telemetry_view, bg=COLOR_BG_PRIMARY)
+        self._telemetry_kpis.grid(row=1, column=0, sticky="ew")
+        self._telemetry_kpi_cards: list[StatCard] = []
         self._build_stat_cards(
-            self.telemetry_view,
+            self._telemetry_kpis,
             (("generated", "Generados", COLOR_TEXT_PRIMARY),
              ("accepted", "Aceptados", COLOR_AVAILABLE),
              ("rejected", "Rechazados", COLOR_OCCUPIED),
              ("entries", "Ingresos", COLOR_INFO),
              ("finished", "Finalizados", COLOR_INFO),
-             ("cancelled", "Cancelados", COLOR_WAITING),
-             ("peak_occupancy", "Máx. ocupación", COLOR_OCCUPIED),
-             ("avg_wait", "Espera promedio", COLOR_WAITING)),
+             ("cancelled", "Cancelados", COLOR_WAITING)),
         )
+        self._telemetry_kpis.bind("<Configure>", self._relayout_telemetry_kpis)
+
+        content = tk.Frame(self.telemetry_view, bg=COLOR_BG_PRIMARY)
+        content.grid(row=2, column=0, sticky="nsew", pady=(4, 0))
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_columnconfigure(1, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+        self.telemetry_capacity_panel = tk.Frame(
+            content, bg=COLOR_BG_CARD, highlightbackground=COLOR_BORDER,
+            highlightthickness=1, padx=8, pady=8,
+        )
+        self.telemetry_capacity_panel.grid(row=0, column=0, sticky="nsew",
+                                           padx=(0, 4), pady=4)
+        self.telemetry_capacity_panel.grid_columnconfigure((0, 1), weight=1, uniform="capacity")
+        tk.Label(self.telemetry_capacity_panel, text="CAPACIDAD Y OCUPACIÓN",
+                 bg=COLOR_BG_CARD,
+                 fg=COLOR_TEXT_PRIMARY, font=(font_family(self.root), 9, "bold"),
+                 anchor="w").grid(row=0, column=0, columnspan=2, sticky="ew",
+                                   pady=(0, 4))
+        for row, column, name, title, initial, color in (
+            (1, 0, "telemetry_current", "Ocupación actual", "0", COLOR_OCCUPIED),
+            (1, 1, "telemetry_capacity", "Capacidad total", str(self.capacity), COLOR_AVAILABLE),
+            (2, 0, "peak_occupancy", "Máximo histórico", "0", COLOR_INFO),
+            (2, 1, "max_utilization", "Utilización máxima", "0.0%", COLOR_INFO),
+        ):
+            card = StatCard(self.telemetry_capacity_panel, title, initial,
+                            value_color=color, compact=True)
+            card.grid(row=row, column=column, sticky="ew", padx=3, pady=2)
+            setattr(self, f"card_{name}", card)
+        progress_style = "Telemetry.Horizontal.TProgressbar"
+        ttk.Style(self.root).configure(
+            progress_style, troughcolor=COLOR_BG_PRIMARY, background=COLOR_INFO,
+            bordercolor=COLOR_BG_CARD, lightcolor=COLOR_INFO, darkcolor=COLOR_INFO,
+            thickness=12,
+        )
+        self.telemetry_utilization_bar = ttk.Progressbar(
+            self.telemetry_capacity_panel, maximum=100, mode="determinate",
+            style=progress_style,
+        )
+        self.telemetry_utilization_bar.grid(row=3, column=0, columnspan=2,
+                                            sticky="ew", padx=3, pady=(2, 0))
+
+        self.telemetry_performance_panel = tk.Frame(
+            content, bg=COLOR_BG_CARD, highlightbackground=COLOR_BORDER,
+            highlightthickness=1, padx=8, pady=8,
+        )
+        self.telemetry_performance_panel.grid(row=0, column=1, sticky="nsew",
+                                               padx=(4, 0), pady=4)
+        self.telemetry_performance_panel.grid_columnconfigure((0, 1), weight=1,
+                                                              uniform="performance")
+        tk.Label(self.telemetry_performance_panel, text="ESPERA Y RENDIMIENTO",
+                 bg=COLOR_BG_CARD, fg=COLOR_TEXT_PRIMARY,
+                 font=(font_family(self.root), 9, "bold"), anchor="w").grid(
+                     row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4)
+                 )
+        for row, column, name, title, initial, color in (
+            (1, 0, "avg_wait", "Espera promedio", "0.00s", COLOR_WAITING),
+            (1, 1, "peak_waiting", "Pico en espera", "0", COLOR_WAITING),
+            (2, 0, "avg_parking", "Estacionamiento promedio", "0.00s", COLOR_AVAILABLE),
+            (2, 1, "duration", "Duración total", "N/D", COLOR_INFO),
+        ):
+            card = StatCard(self.telemetry_performance_panel, title, initial,
+                            value_color=color, compact=True)
+            card.grid(row=row, column=column, sticky="ew", padx=3, pady=2)
+            setattr(self, f"card_{name}", card)
+
         self.metrics_summary = MetricsSummaryWidget(self.telemetry_view, capacity=self.capacity)
-        self.metrics_summary.pack(fill="x", pady=(12, 0))
-        tk.Label(
-            self.telemetry_view,
-            text="Arquitectura observada: proceso motor → IPC → adaptador → cola local → Tkinter",
-            bg=COLOR_BG_PRIMARY, fg=COLOR_TEXT_MUTED,
-            font=(font_family(self.root), 9), anchor="w",
-        ).pack(fill="x", pady=(10, 0))
+        self.metrics_summary.grid(row=3, column=0, sticky="ew", pady=(5, 0))
+        self.metrics_summary.set_compact(True)
+        self._telemetry_content = content
+        content.bind("<Configure>", self._relayout_telemetry_content)
 
         self.event_log = EventLogWidget(self.events_view)
         self.event_log.pack(fill="both", expand=True)
 
     def _build_stat_cards(self, parent: tk.Misc, definitions: tuple) -> None:
-        """Create a responsive row of cards while retaining existing counter APIs."""
-        row = tk.Frame(parent, bg=COLOR_BG_PRIMARY)
-        row.pack(fill="x")
+        """Create KPI cards while keeping operational cards in their existing row."""
+        responsive = getattr(self, "_telemetry_kpis", None) is parent
+        row = parent if responsive else tk.Frame(parent, bg=COLOR_BG_PRIMARY)
+        if not responsive:
+            row.pack(fill="x")
         for column, (name, title, color) in enumerate(definitions):
             initial = str(self.capacity) if name == "available" else "0"
             if name == "avg_wait":
@@ -215,9 +305,40 @@ class ParkingApp:
                 row, title=title, initial_value=initial,
                 subtitle=subtitle, value_color=color, compact=True,
             )
-            card.grid(row=0, column=column, sticky="nsew", padx=4, pady=4)
-            row.grid_columnconfigure(column, weight=1, uniform="view_kpi")
+            grid_row, grid_column = (column // 3, column % 3) if responsive else (0, column)
+            card.grid(row=grid_row, column=grid_column, sticky="nsew", padx=4, pady=4)
+            row.grid_columnconfigure(grid_column, weight=1, uniform="view_kpi")
             setattr(self, f"card_{name}", card)
+            if getattr(self, "_telemetry_kpis", None) is row:
+                self._telemetry_kpi_cards.append(card)
+
+    def _relayout_telemetry_kpis(self, event: Any) -> None:
+        columns = 3
+        for index, card in enumerate(self._telemetry_kpi_cards):
+            card.grid(row=index // columns, column=index % columns)
+        for column in range(3):
+            if column < columns:
+                self._telemetry_kpis.grid_columnconfigure(
+                    column, weight=1, uniform="view_kpi"
+                )
+            else:
+                self._telemetry_kpis.grid_columnconfigure(column, weight=0, uniform="")
+
+    def _relayout_telemetry_content(self, event: Any) -> None:
+        if event.width < 760:
+            self._telemetry_content.grid_columnconfigure(0, weight=1)
+            self._telemetry_content.grid_columnconfigure(1, weight=1)
+            self.telemetry_capacity_panel.grid(row=0, column=0, columnspan=2,
+                                               sticky="ew", pady=(4, 3))
+            self.telemetry_performance_panel.grid(row=1, column=0, columnspan=2,
+                                                  sticky="ew", pady=(3, 4))
+        else:
+            self._telemetry_content.grid_columnconfigure(0, weight=1)
+            self._telemetry_content.grid_columnconfigure(1, weight=1)
+            self.telemetry_capacity_panel.grid(row=0, column=0, columnspan=1,
+                                               sticky="nsew", padx=(0, 4), pady=4)
+            self.telemetry_performance_panel.grid(row=0, column=1, columnspan=1,
+                                                  sticky="nsew", padx=(4, 0), pady=4)
 
     def _build_scenario_selector(self) -> None:
         """Offer scenario inputs without moving simulation control into the UI."""
@@ -267,6 +388,13 @@ class ParkingApp:
         waiting_lane = getattr(self, "waiting_lane", None)
         if waiting_lane is not None and hasattr(waiting_lane, "set_capacity"):
             waiting_lane.set_capacity(self._selected_scenario_capacity)
+        if hasattr(self, "_telemetry_scenario"):
+            title = next(
+                (scenario_title for name, (scenario_title, _capacity)
+                 in self._scenario_options.items() if name == self._selected_scenario_name),
+                "Escenario predeterminado",
+            )
+            self._telemetry_scenario.config(text=title)
 
     def _apply_selected_authorizations(self) -> None:
         grid = getattr(self, "parking_grid", None)
@@ -296,8 +424,15 @@ class ParkingApp:
         self.card_occupied.update_value(0)
         self.card_occupied.update_subtitle(f"de {capacity} ({capacity} libres)")
         self.card_waiting.update_value(0)
-        self.card_peak_occupancy.update_subtitle(f"de {capacity}")
+        if hasattr(self, "card_telemetry_capacity"):
+            self.card_telemetry_capacity.update_value(capacity)
         self.metrics_summary.capacity = capacity
+        if hasattr(self, "card_telemetry_current"):
+            self._update_telemetry_metrics(self._active_metrics_source()[1])
+
+    def _set_telemetry_status(self, label: str, color: str) -> None:
+        if hasattr(self, "_telemetry_status"):
+            self._telemetry_status.config(text=f"● {label}", fg=color)
 
     def _build_footer(self) -> None:
         """Construct the bottom status bar explaining the real IPC architecture."""
@@ -549,6 +684,7 @@ class ParkingApp:
         try:
             # 1. Simulation Lifecycle: Started
             if event_type == "SIMULATION_STARTED":
+                self._set_telemetry_status("EN EJECUCIÓN", COLOR_AVAILABLE)
                 self.parking_grid.reset()
                 self.waiting_lane.clear()
                 if hasattr(self, "request_table"):
@@ -567,6 +703,12 @@ class ParkingApp:
             # 2. Simulation Lifecycle: Finished
             elif event_type == "SIMULATION_FINISHED":
                 self._update_display_counters()
+                _metrics, summary = self._active_metrics_source()
+                stopped = int(summary.get("total_cancelled") or 0) > 0
+                self._set_telemetry_status(
+                    "DETENIDA" if stopped else "FINALIZADA",
+                    COLOR_WAITING if stopped else COLOR_AVAILABLE,
+                )
                 if not self._closing:
                     self.control_bar.set_pending("FINALIZANDO")
                     self._schedule_restart_check()
@@ -741,12 +883,8 @@ class ParkingApp:
         self.card_rejected.update_value(snapshot.get("total_rejected", 0))
         self.card_entries.update_value(snapshot.get("total_parked", 0))
         self.card_cancelled.update_value(snapshot.get("total_cancelled", 0))
-
-        if hasattr(self, "card_peak_occupancy"):
-            self.card_peak_occupancy.update_value(snapshot.get("peak_occupancy", 0))
-        if hasattr(self, "card_avg_wait"):
-            avg_wait = float(snapshot.get("average_waiting_time") or 0.0)
-            self.card_avg_wait.update_value(f"{avg_wait:.2f}s")
+        if hasattr(self, "card_telemetry_current"):
+            self._update_telemetry_metrics(snapshot)
 
         if hasattr(self, "metrics_summary"):
             report_text = (
@@ -765,6 +903,31 @@ class ParkingApp:
             self.metrics_summary.update_from_snapshot(
                 snapshot, report_text=report_text, warning=warning
             )
+
+    def _update_telemetry_metrics(self, snapshot: Mapping[str, Any]) -> None:
+        """Render capacity and performance values from the existing run snapshot."""
+        capacity = max(0, int(self.capacity))
+        peak = max(0, int(snapshot.get("peak_occupancy") or 0))
+        current = max(0, int(self.projection.occupied_count))
+        utilization = (peak / capacity * 100.0) if capacity else 0.0
+
+        self.card_telemetry_current.update_value(current)
+        self.card_telemetry_capacity.update_value(capacity)
+        self.card_peak_occupancy.update_value(peak)
+        self.card_max_utilization.update_value(f"{utilization:.1f}%")
+        self.telemetry_utilization_bar.configure(value=min(100.0, utilization))
+
+        avg_wait = float(snapshot.get("average_waiting_time") or 0.0)
+        avg_parking = float(snapshot.get("average_parking_time") or 0.0)
+        duration = snapshot.get("total_duration")
+        self.card_peak_waiting.update_value(snapshot.get("peak_waiting", 0) or 0)
+        self.card_avg_wait.update_value(f"{avg_wait:.2f}s")
+        self.card_avg_parking.update_value(f"{avg_parking:.2f}s")
+        self.card_duration.update_value(
+            f"{float(duration):.2f}s"
+            if duration is not None
+            else ("En curso" if snapshot.get("total_generated", 0) else "N/D")
+        )
 
     def _reconcile_snapshot(self, snapshot: ParkingSnapshot) -> None:
         """Refresh displayed occupancy from a safe core snapshot when supplied."""

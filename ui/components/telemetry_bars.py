@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime
+from math import isfinite
 from typing import Callable
 
 from ui.components.theme import (
@@ -104,6 +106,151 @@ class StatCard(tk.Frame):
             self._lbl_subtitle.pack(fill="x")
 
 
+class OccupancySeries:
+    """Validated UI-local occupancy history derived only from entry/exit events."""
+
+    def __init__(self, capacity: int) -> None:
+        self.reset(capacity)
+
+    def reset(self, capacity: int) -> None:
+        self.capacity = max(0, int(capacity))
+        self.points: list[tuple[float | None, int]] = [(None, 0)]
+        self.occupants: dict[int, int] = {}
+        self.spaces: set[int] = set()
+        self.warning = ""
+
+    @property
+    def occupancy(self) -> int:
+        return len(self.occupants)
+
+    def record(self, event: object) -> bool:
+        event_type = getattr(event, "type", None)
+        if event_type not in {"VEHICLE_ENTERED", "VEHICLE_EXITED"}:
+            return False
+        timestamp = getattr(event, "timestamp", None)
+        vehicle_id = getattr(event, "vehicle_id", None)
+        space_id = getattr(event, "space_id", None)
+        if (not isinstance(timestamp, (int, float)) or not isfinite(timestamp)
+                or type(vehicle_id) is not int or type(space_id) is not int
+                or not 0 <= space_id < self.capacity):
+            self.warning = "Evento de ocupación inconsistente: datos inválidos; transición omitida."
+            return False
+        previous_timestamp = self.points[-1][0]
+        if previous_timestamp is not None and timestamp < previous_timestamp:
+            self.warning = "Evento de ocupación inconsistente: timestamp fuera de orden; transición omitida."
+            return False
+
+        if event_type == "VEHICLE_ENTERED":
+            if vehicle_id in self.occupants or space_id in self.spaces:
+                self.warning = "Evento de ocupación inconsistente: ingreso duplicado; transición omitida."
+                return False
+            if self.occupancy >= self.capacity:
+                self.warning = "Evento de ocupación inconsistente: capacidad excedida; transición omitida."
+                return False
+            self.occupants[vehicle_id] = space_id
+            self.spaces.add(space_id)
+        else:
+            if self.occupants.get(vehicle_id) != space_id:
+                self.warning = "Evento de ocupación inconsistente: salida sin ingreso coincidente; transición omitida."
+                return False
+            del self.occupants[vehicle_id]
+            self.spaces.remove(space_id)
+
+        self.warning = ""
+        self.points.append((float(timestamp), self.occupancy))
+        return True
+
+
+class OccupancyTimelineWidget(tk.Frame):
+    """Dark-themed stepped occupancy plot with coalesced Tk redraws."""
+
+    def __init__(self, parent: tk.Widget, capacity: int, **kwargs) -> None:
+        super().__init__(parent, bg=COLOR_BG_CARD, highlightbackground=COLOR_BORDER,
+                         highlightthickness=1, padx=12, pady=10, **kwargs)
+        self.series = OccupancySeries(capacity)
+        self._redraw_pending = False
+        self._last_warning = ""
+        tk.Label(self, text="OCUPACIÓN EN EL TIEMPO", bg=COLOR_BG_CARD,
+                 fg=COLOR_TEXT_PRIMARY, font=(font_family(self), 10, "bold"),
+                 anchor="w").pack(fill="x")
+        self._lbl_warning = tk.Label(self, text="", bg=COLOR_BG_CARD,
+                                     fg=COLOR_OCCUPIED, anchor="w",
+                                     font=(font_family(self), 8))
+        self._lbl_warning.pack(fill="x", pady=(2, 0))
+        self.canvas = tk.Canvas(self, bg=COLOR_BG_CARD, highlightthickness=0,
+                                height=230)
+        self.canvas.pack(fill="both", expand=True, pady=(6, 0))
+        self.canvas.bind("<Configure>", self._schedule_redraw)
+        self._schedule_redraw()
+
+    def reset(self, capacity: int) -> None:
+        self.series.reset(capacity)
+        if self._last_warning:
+            self._lbl_warning.config(text="")
+            self._last_warning = ""
+        self._schedule_redraw()
+
+    def record_event(self, event: object) -> bool:
+        accepted = self.series.record(event)
+        if self.series.warning != self._last_warning:
+            self._lbl_warning.config(text=self.series.warning)
+            self._last_warning = self.series.warning
+        if accepted:
+            self._schedule_redraw()
+        return accepted
+
+    def _schedule_redraw(self, _event: object = None) -> None:
+        if self._redraw_pending:
+            return
+        self._redraw_pending = True
+        try:
+            self.after_idle(self._redraw)
+        except tk.TclError:
+            self._redraw_pending = False
+
+    def _redraw(self) -> None:
+        self._redraw_pending = False
+        canvas = self.canvas
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        canvas.delete("all")
+        if width < 80 or height < 60:
+            return
+        left, right, top, bottom = 42, width - 12, 12, height - 30
+        plot_width, plot_height = right - left, bottom - top
+        max_value = max(1, self.series.capacity)
+        for level in range(max_value + 1):
+            y = bottom - plot_height * level / max_value
+            canvas.create_line(left, y, right, y, fill="#263244", dash=(2, 4))
+            canvas.create_text(left - 8, y, text=str(level), fill=COLOR_TEXT_MUTED,
+                               anchor="e", font=(font_family(self), 8))
+        canvas.create_line(left, top, left, bottom, fill=COLOR_BORDER)
+        canvas.create_line(left, bottom, right, bottom, fill=COLOR_BORDER)
+        events = self.series.points[1:]
+        if not events:
+            canvas.create_text((left + right) / 2, (top + bottom) / 2,
+                               text="Esperando ingresos y salidas recibidos",
+                               fill=COLOR_TEXT_MUTED, font=(font_family(self), 9))
+            return
+        start, end = events[0][0], events[-1][0]
+        span = end - start
+        x_for = lambda timestamp: left if span <= 0 else left + (timestamp - start) / span * plot_width
+        y_for = lambda value: bottom - value / max_value * plot_height
+        coordinates: list[float] = [left, y_for(0)]
+        previous_value = 0
+        for timestamp, value in events:
+            x = x_for(timestamp)
+            coordinates.extend((x, y_for(previous_value), x, y_for(value)))
+            previous_value = value
+        coordinates.extend((right, y_for(previous_value)))
+        canvas.create_line(*coordinates, fill=COLOR_INFO, width=2, joinstyle="round")
+        canvas.create_text(left, bottom + 14,
+                           text=datetime.fromtimestamp(start).strftime("%H:%M:%S"),
+                           fill=COLOR_TEXT_MUTED, anchor="w", font=(font_family(self), 8))
+        canvas.create_text(right, bottom + 14,
+                           text=datetime.fromtimestamp(end).strftime("%H:%M:%S"),
+                           fill=COLOR_TEXT_MUTED, anchor="e", font=(font_family(self), 8))
+
+
 class MetricsSummaryWidget(tk.Frame):
     """Persistent end-of-run and live execution summary panel.
 
@@ -133,14 +280,15 @@ class MetricsSummaryWidget(tk.Frame):
         header = tk.Frame(self, bg=COLOR_BG_CARD)
         header.pack(fill="x", pady=(0, 4))
 
-        tk.Label(
+        self._header_title = tk.Label(
             header,
             text="RESUMEN DE EJECUCIÓN Y TELEMETRÍA",
             bg=COLOR_BG_CARD,
             fg=COLOR_INFO,
             font=(font_family(self), 9, "bold"),
             anchor="w",
-        ).pack(side="left")
+        )
+        self._header_title.pack(side="left")
 
         self._btn_report = tk.Button(
             header,
@@ -172,6 +320,7 @@ class MetricsSummaryWidget(tk.Frame):
         # Consolidated summary metrics grid (visible directly without opening a dialog)
         metrics_row = tk.Frame(self, bg=COLOR_BG_CARD)
         metrics_row.pack(fill="x")
+        self._metrics_row = metrics_row
 
         self._items: dict[str, tk.Label] = {}
         definitions = (
@@ -228,6 +377,12 @@ class MetricsSummaryWidget(tk.Frame):
             pady=2,
         )
         self._lbl_warning.pack(fill="x", pady=(4, 0))
+
+    def set_compact(self, compact: bool) -> None:
+        """Show only the terminal status in dashboards whose KPIs are elsewhere."""
+        if compact:
+            self._metrics_row.pack_forget()
+            self._header_title.config(text="RESULTADO DE EJECUCIÓN")
 
     def update_from_snapshot(
         self,
