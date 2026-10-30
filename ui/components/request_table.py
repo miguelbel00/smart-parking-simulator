@@ -10,7 +10,6 @@ from ui.components.theme import (
     COLOR_BG_CARD,
     COLOR_BG_PRIMARY,
     COLOR_BORDER,
-    COLOR_INFO,
     COLOR_INFO_BG,
     COLOR_LOG_BG,
     COLOR_OCCUPIED,
@@ -28,8 +27,8 @@ class RequestTrackingTableWidget(tk.Frame):
     Columns:
     - ID (`id`)
     - Placa (`plate`)
-    - Puesto autorizado (`authorized_slot`)
-    - Puesto ocupado (`occupied_slot`)
+    - Espacio autorizado (`authorized_slot`)
+    - Espacio ocupado (`occupied_slot`)
     - Estado / Resultado (`state`)
     - Tiempo de espera (`waiting_time`)
     - Motivo (`reason`)
@@ -39,13 +38,13 @@ class RequestTrackingTableWidget(tk.Frame):
     """
 
     COLUMNS = (
-        ("id", "ID", 52, "center"),
-        ("plate", "Placa", 88, "center"),
-        ("authorized_slot", "Puesto Aut.", 86, "center"),
-        ("occupied_slot", "Puesto Ocup.", 88, "center"),
-        ("state", "Estado / Resultado", 118, "center"),
-        ("waiting_time", "Espera", 74, "e"),
-        ("reason", "Motivo", 130, "w"),
+        ("id", "ID", 60, "center"),
+        ("plate", "Placa", 100, "center"),
+        ("authorized_slot", "Espacio Aut.", 140, "center"),
+        ("occupied_slot", "Espacio Ocup.", 140, "center"),
+        ("state", "Estado / Resultado", 155, "center"),
+        ("waiting_time", "Espera", 95, "center"),
+        ("reason", "Motivo", 180, "w"),
     )
 
     def __init__(self, parent: tk.Widget, **kwargs) -> None:
@@ -54,8 +53,8 @@ class RequestTrackingTableWidget(tk.Frame):
             bg=COLOR_BG_CARD,
             highlightbackground=COLOR_BORDER,
             highlightthickness=1,
-            padx=12,
-            pady=8,
+            padx=16,
+            pady=12,
             **kwargs,
         )
         self._row_ids: dict[int, str] = {}
@@ -65,10 +64,19 @@ class RequestTrackingTableWidget(tk.Frame):
 
         tk.Label(
             header,
-            text="SEGUIMIENTO DE SOLICITUDES (ciclo de vida en tiempo real)",
+            text="SEGUIMIENTO DE SOLICITUDES",
             bg=COLOR_BG_CARD,
             fg=COLOR_TEXT_PRIMARY,
-            font=(font_family(self), 9, "bold"),
+            font=(font_family(self), 11, "bold"),
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Label(
+            header,
+            text="Ciclo de vida en tiempo real",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_TEXT_MUTED,
+            font=(font_family(self), 9),
             anchor="w",
         ).pack(side="left")
 
@@ -93,16 +101,16 @@ class RequestTrackingTableWidget(tk.Frame):
             background=COLOR_LOG_BG,
             fieldbackground=COLOR_LOG_BG,
             foreground=COLOR_TEXT_PRIMARY,
-            rowheight=23,
+            rowheight=32,
             borderwidth=0,
-            font=(font_family(self), 8),
+            font=(font_family(self), 11),
         )
         style.configure(
             "Parking.Treeview.Heading",
             background=COLOR_BG_PRIMARY,
             foreground=COLOR_TEXT_MUTED,
             relief="flat",
-            font=(font_family(self), 8, "bold"),
+            font=(font_family(self), 10, "bold"),
         )
         style.map(
             "Parking.Treeview",
@@ -138,7 +146,7 @@ class RequestTrackingTableWidget(tk.Frame):
         self._tree.tag_configure("WAITING", foreground=COLOR_WAITING)
         self._tree.tag_configure("ENTERED", foreground=COLOR_AVAILABLE)
         self._tree.tag_configure("EXITED", foreground="#c084fc")
-        self._tree.tag_configure("FINISHED", foreground=COLOR_INFO)
+        self._tree.tag_configure("FINISHED", foreground=COLOR_TEXT_MUTED)
         self._tree.tag_configure("CANCELLED", foreground="#fb923c")
         self._tree.tag_configure("REJECTED", foreground=COLOR_OCCUPIED)
 

@@ -43,8 +43,8 @@ class RequestRecord:
         return (
             f"#{self.vehicle_id}",
             self.plate if self.plate else "—",
-            f"Puesto #{self.authorized_slot}" if self.authorized_slot is not None else "—",
-            f"Puesto #{self.occupied_slot}" if self.occupied_slot is not None else "—",
+            f"Espacio #{self.authorized_slot}" if self.authorized_slot is not None else "—",
+            f"Espacio #{self.occupied_slot}" if self.occupied_slot is not None else "—",
             self.state,
             f"{self.waiting_time:.2f}s" if self.waiting_time is not None else "—",
             self.reason if self.reason else "—",

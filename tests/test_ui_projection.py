@@ -952,7 +952,7 @@ def test_request_tracking_table_lifecycle_retains_rows_and_uses_em_dash() -> Non
         )
         rows = dict((r[0], r) for r in app.request_table.rows())
         assert rows["#1"] == (
-            "#1", "EDU-001", "Puesto #1", "—", "CREATED", "—", "—"
+            "#1", "EDU-001", "Espacio #1", "—", "CREATED", "—", "—"
         )
 
         app._dispatch_event(
@@ -973,7 +973,7 @@ def test_request_tracking_table_lifecycle_retains_rows_and_uses_em_dash() -> Non
         )
         rows = dict((r[0], r) for r in app.request_table.rows())
         assert rows["#1"] == (
-            "#1", "EDU-001", "Puesto #1", "Puesto #1", "ENTERED", "2.35s", "—"
+            "#1", "EDU-001", "Espacio #1", "Espacio #1", "ENTERED", "2.35s", "—"
         )
 
         app._dispatch_event(
@@ -1012,13 +1012,13 @@ def test_request_tracking_table_lifecycle_retains_rows_and_uses_em_dash() -> Non
         rows = dict((r[0], r) for r in app.request_table.rows())
         assert set(rows.keys()) == {"#1", "#2", "#3"}
         assert rows["#1"] == (
-            "#1", "EDU-001", "Puesto #1", "Puesto #1", "FINISHED", "2.35s", "—"
+            "#1", "EDU-001", "Espacio #1", "Espacio #1", "FINISHED", "2.35s", "—"
         )
         assert rows["#2"] == (
             "#2", "NO-AUTH", "—", "—", "REJECTED", "—", "NOT_AUTHORIZED"
         )
         assert rows["#3"] == (
-            "#3", "EDU-003", "Puesto #3", "—", "CANCELLED", "—", "STOP_REQUESTED"
+            "#3", "EDU-003", "Espacio #3", "—", "CANCELLED", "—", "STOP_REQUESTED"
         )
     finally:
         app.root.destroy()
