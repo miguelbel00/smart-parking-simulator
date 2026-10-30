@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
+from tkinter import font as tkfont
 
 from ui.components.theme import (
     COLOR_BG_CARD,
@@ -41,20 +43,34 @@ class WaitingQueueWidget(tk.Frame):
         self._plates: dict[int, str] = {}
         self._authorized_slots: dict[int, int | None] = {}
         self._states: dict[int, str] = {}
-        self._group_rows: dict[int | None, tuple[tk.Frame, tk.Label, tk.Label]] = {}
+        self._group_rows: dict[
+            int | None,
+            tuple[
+                tk.Frame, tk.Label, tk.Label, tk.Frame,
+                dict[int, tk.Label], dict[int, tk.Label], list[int],
+            ],
+        ] = {}
+        self._chip_font = tkfont.Font(
+            root=self, family=font_family(self), size=11, weight="normal"
+        )
+        font_unit = max(self._chip_font.measure("0"), 1)
+        typical_plate_width = self._chip_font.measure("WWW-888")
+        self._chip_base_width = max(
+            1, math.ceil(typical_plate_width / font_unit)
+        )
         # Top Bar Header
         top_bar = tk.Frame(self, bg=COLOR_BG_CARD)
         top_bar.pack(fill="x")
 
-        lbl_title = tk.Label(
+        self._lbl_title = tk.Label(
             top_bar,
-            text="SOLICITUDES PENDIENTES POR PUESTO AUTORIZADO (FIFO por puesto)",
+            text="Solicitudes pendientes",
             bg=COLOR_BG_CARD,
-            fg=COLOR_WAITING,
-            font=(font_family(self), 9, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            font=(font_family(self), 12, "bold"),
             anchor="w",
         )
-        lbl_title.pack(side="left")
+        self._lbl_title.pack(side="left")
 
         self._lbl_count = tk.Label(
             top_bar,
@@ -65,7 +81,17 @@ class WaitingQueueWidget(tk.Frame):
             padx=6,
             pady=1,
         )
-        self._lbl_count.pack(side="right")
+        self._lbl_count.pack(side="right", padx=(8, 0))
+
+        self._lbl_subtitle = tk.Label(
+            self,
+            text="FIFO por espacio autorizado",
+            bg=COLOR_BG_CARD,
+            fg=COLOR_TEXT_MUTED,
+            font=(font_family(self), 10),
+            anchor="w",
+        )
+        self._lbl_subtitle.pack(fill="x", pady=(2, 0))
 
         # Scrollable viewport (both vertical and horizontal) for slot groups
         viewport = tk.Frame(self, bg=COLOR_BG_CARD)
@@ -74,7 +100,7 @@ class WaitingQueueWidget(tk.Frame):
         self._canvas = tk.Canvas(
             viewport,
             bg=COLOR_BG_CARD,
-            height=78,
+            height=112,
             highlightthickness=0,
             bd=0,
         )
@@ -120,7 +146,7 @@ class WaitingQueueWidget(tk.Frame):
             content_height = bbox[3] - bbox[1]
             canvas_width = max(self._canvas.winfo_width(), 1)
             canvas_height = max(self._canvas.winfo_height(), 1)
-            if content_width > canvas_width and len(self._vehicles) > 1:
+            if content_width > canvas_width:
                 if not self._scrollbar.winfo_ismapped():
                     self._scrollbar.pack(side="bottom", fill="x", pady=(2, 0))
             elif self._scrollbar.winfo_ismapped():
@@ -193,7 +219,7 @@ class WaitingQueueWidget(tk.Frame):
         return groups
 
     def clear(self) -> None:
-        """Clear all pending requests."""
+        """Clear pending requests and reset chip sizing for a new run."""
         self._vehicles.clear()
         self._plates.clear()
         self._authorized_slots.clear()
@@ -201,25 +227,39 @@ class WaitingQueueWidget(tk.Frame):
         self._refresh()
 
     def _refresh(self) -> None:
-        """Update a bounded set of per-slot rows without rebuilding the view."""
+        """Incrementally reconcile visible rows and chips with pending requests."""
         count = len(self._vehicles)
-        self._lbl_count.config(
-            text=f"{count} pendiente{'s' if count != 1 else ''}"
-        )
+        total_text = f"{count} pendiente{'s' if count != 1 else ''}"
+        if self._lbl_count.cget("text") != total_text:
+            self._lbl_count.config(text=total_text)
 
         groups = self.grouped_pending()
-        for slot_key, (row, _, _) in self._group_rows.items():
-            if slot_key not in groups:
+        font_unit = max(self._chip_font.measure("0"), 1)
+
+        for slot_key, row_data in self._group_rows.items():
+            if slot_key in groups:
+                continue
+            row, _, _, _, chips, separators, rendered_order = row_data
+            for chip in chips.values():
+                chip.destroy()
+            chips.clear()
+            for separator in separators.values():
+                separator.destroy()
+            separators.clear()
+            rendered_order.clear()
+            if row.winfo_manager() == "grid":
                 row.grid_remove()
 
         if not groups:
-            self._lbl_empty.grid()
+            if self._lbl_empty.winfo_manager() != "grid":
+                self._lbl_empty.grid()
             self._canvas.xview_moveto(0.0)
             self._canvas.yview_moveto(0.0)
             self._on_items_configure()
             return
 
-        self._lbl_empty.grid_remove()
+        if self._lbl_empty.winfo_manager() == "grid":
+            self._lbl_empty.grid_remove()
         # Sort group rows by slot number (1..N, then None) while keeping acceptance order inside each group
         sorted_slots = sorted(
             groups.keys(), key=lambda s: (s is None, s if s is not None else 0)
@@ -237,31 +277,118 @@ class WaitingQueueWidget(tk.Frame):
                     anchor="w",
                     bg=COLOR_BG_PRIMARY,
                     fg=COLOR_INFO,
-                    font=(font_family(self), 8, "bold"),
-                    padx=6,
-                    pady=3,
+                    font=(font_family(self), 11, "bold"),
+                    padx=8,
+                    pady=5,
                 )
-                slot_label.pack(side="left", padx=(0, 6))
-                queue_label = tk.Label(
-                    group_row,
-                    text="",
-                    anchor="w",
-                    bg=COLOR_BG_CARD,
-                    fg=COLOR_TEXT_PRIMARY,
-                    font=(font_family(self), 8),
+                slot_label.pack(side="left", padx=(0, 8))
+                count_label = tk.Label(
+                    group_row, text="", anchor="w",
+                    bg=COLOR_BG_CARD, fg=COLOR_WAITING,
+                    font=(font_family(self), 9, "bold"),
                 )
-                queue_label.pack(side="left", fill="x", expand=True)
-                row_data = (group_row, slot_label, queue_label)
+                count_label.pack(side="left", padx=(0, 8))
+                plates_container = tk.Frame(group_row, bg=COLOR_BG_CARD)
+                plates_container.pack(side="left", fill="x", expand=True)
+                row_data = (
+                    group_row, slot_label, count_label, plates_container, {}, {}, []
+                )
                 self._group_rows[slot_key] = row_data
 
-            group_row, slot_label, queue_label = row_data
-            slot_label.config(text=f"Puesto #{slot_key}:" if slot_key is not None else "Puesto s/a:")
-            preview = [self._plates.get(vid, f"Auto #{vid}") for vid in vids[:3]]
-            queue_text = f"{len(vids)} en espera: " + " → ".join(preview)
-            if len(vids) > len(preview):
-                queue_text += f" · +{len(vids) - len(preview)} más"
-            queue_label.config(text=queue_text)
-            group_row.grid(row=row_index, column=0, sticky="ew", pady=2)
+            (
+                group_row, slot_label, count_label, plates_container,
+                chips, separators, rendered_order,
+            ) = row_data
+            slot_text = f"Espacio #{slot_key}" if slot_key is not None else "Espacio s/a"
+            if slot_label.cget("text") != slot_text:
+                slot_label.config(text=slot_text)
+            count_text = f"{len(vids)} en espera"
+            if count_label.cget("text") != count_text:
+                count_label.config(text=count_text)
+
+            old_order = list(rendered_order)
+            old_head = old_order[0] if old_order else None
+            old_ids = set(old_order)
+            new_ids = set(vids)
+            for vehicle_id in old_ids - new_ids:
+                chips.pop(vehicle_id).destroy()
+
+            desired_separators = set(vids[:-1])
+            for vehicle_id in set(separators) - desired_separators:
+                separators.pop(vehicle_id).destroy()
+
+            added = [vehicle_id for vehicle_id in vids if vehicle_id not in old_ids]
+            for vehicle_id in added:
+                plate = self._plates.get(vehicle_id, f"Auto #{vehicle_id}")
+                chip_width = max(
+                    self._chip_base_width,
+                    math.ceil(self._chip_font.measure(plate) / font_unit),
+                )
+                chip = tk.Label(
+                    plates_container,
+                    text=plate,
+                    font=self._chip_font,
+                    width=chip_width,
+                    padx=8,
+                    pady=4,
+                    relief="flat",
+                    anchor="center",
+                    bg=COLOR_BG_PRIMARY,
+                    fg=COLOR_TEXT_PRIMARY,
+                )
+                chips[vehicle_id] = chip
+
+            for vehicle_id in desired_separators - set(separators):
+                separators[vehicle_id] = tk.Label(
+                    plates_container,
+                    text="|",
+                    bg=COLOR_BG_CARD,
+                    fg=COLOR_TEXT_MUTED,
+                    font=(font_family(self), 10),
+                )
+
+            for vehicle_id in vids:
+                chip = chips.get(vehicle_id)
+                plate = self._plates.get(vehicle_id, f"Auto #{vehicle_id}")
+                if chip.cget("text") != plate:
+                    chip_width = max(
+                        self._chip_base_width,
+                        math.ceil(self._chip_font.measure(plate) / font_unit),
+                    )
+                    chip.config(text=plate, width=chip_width)
+
+            new_head = vids[0] if vids else None
+            if old_head != new_head:
+                for vehicle_id in {old_head, new_head} - {None}:
+                    chip = chips.get(vehicle_id)
+                    if chip is not None:
+                        is_head = vehicle_id == new_head
+                        chip.config(
+                            bg=COLOR_WAITING_BG if is_head else COLOR_BG_PRIMARY,
+                            fg=COLOR_WAITING if is_head else COLOR_TEXT_PRIMARY,
+                        )
+
+            retained = [vehicle_id for vehicle_id in old_order if vehicle_id in new_ids]
+            if vids != retained + added:
+                # A non-append reorder is unusual, but only this changed group is reordered.
+                for widget in (*chips.values(), *separators.values()):
+                    widget.pack_forget()
+                for index, vehicle_id in enumerate(vids):
+                    chips[vehicle_id].pack(side="left", padx=(0, 2))
+                    if index < len(vids) - 1:
+                        separators[vehicle_id].pack(side="left", padx=4)
+            else:
+                for index, vehicle_id in enumerate(vids):
+                    if vehicle_id not in added:
+                        continue
+                    if index:
+                        separators[vids[index - 1]].pack(side="left", padx=4)
+                    chips[vehicle_id].pack(side="left", padx=(0, 2))
+
+            rendered_order[:] = vids
+            if (group_row.winfo_manager() != "grid"
+                    or group_row.grid_info().get("row") != row_index):
+                group_row.grid(row=row_index, column=0, sticky="ew", pady=5)
 
         self._on_items_configure()
 

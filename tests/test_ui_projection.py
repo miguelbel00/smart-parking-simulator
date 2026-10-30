@@ -6,6 +6,7 @@ from time import monotonic, sleep
 from types import SimpleNamespace
 
 import pytest
+import tkinter as tk
 
 from core.events import ParkingEvent
 from core.parking import ParkingLot
@@ -1038,6 +1039,15 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
             event("VEHICLE_WAITING", 10, plate="BBB-010", authorized_space_id=0)
         )
 
+        # A later request for another space is grouped separately without
+        # changing the relative order of competing requests for space 1.
+        app._dispatch_event(
+            event("VEHICLE_CREATED", 7, plate="CCC-007", authorized_space_id=1)
+        )
+        app._dispatch_event(
+            event("VEHICLE_WAITING", 7, plate="CCC-007", authorized_space_id=1)
+        )
+
         # Vehicle 2 waits at the same slot; acceptance order is preserved.
         app._dispatch_event(
             event("VEHICLE_CREATED", 2, plate="DDD-002", authorized_space_id=0)
@@ -1051,16 +1061,23 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
         )
 
         grouped = app.waiting_lane.grouped_pending()
-        assert grouped == {1: [10, 2]}
+        assert grouped == {1: [10, 2], 2: [7]}
         assert app.waiting_lane._plates[10] == "BBB-010"
         assert app.waiting_lane._plates[2] == "DDD-002"
         assert app.waiting_lane._states[2] == "WAITING"
-        assert app.card_waiting._lbl_value.cget("text") == "2"
+        assert app.card_waiting._lbl_value.cget("text") == "3"
+        assert app.waiting_lane._lbl_count.cget("text") == "3 pendientes"
 
         group_row = app.waiting_lane._group_rows[1][0]
         assert app.waiting_lane._group_rows[1][0] is group_row
-        assert len(app.waiting_lane._items_container.winfo_children()) == 2
-        assert "2 en espera" in app.waiting_lane._group_rows[1][2].cget("text")
+        assert len(app.waiting_lane._items_container.winfo_children()) == 3
+        assert app.waiting_lane._group_rows[1][2].cget("text") == "2 en espera"
+        assert [label.cget("text") for label in app.waiting_lane._group_rows[1][4].values()] == [
+            "BBB-010", "DDD-002"
+        ]
+        assert app.waiting_lane._lbl_title.cget("text") == "Solicitudes pendientes"
+        assert app.waiting_lane._lbl_subtitle.cget("text") == "FIFO por espacio autorizado"
+        assert app.waiting_lane._group_rows[1][4][10].cget("bg") == "#78350f"
 
         for vehicle_id in range(11, 31):
             app._dispatch_event(
@@ -1071,10 +1088,17 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
                 event("VEHICLE_WAITING", vehicle_id, plate=f"Q-{vehicle_id}",
                       authorized_space_id=0)
             )
-        assert len(app.waiting_lane._group_rows) == 1
+        assert len(app.waiting_lane._group_rows) == 2
         assert app.waiting_lane._group_rows[1][0] is group_row
-        assert len(app.waiting_lane._items_container.winfo_children()) == 2
-        assert "+19 más" in app.waiting_lane._group_rows[1][2].cget("text")
+        assert len(app.waiting_lane._items_container.winfo_children()) == 3
+        assert app.waiting_lane._group_rows[1][2].cget("text") == "22 en espera"
+        assert app.waiting_lane._lbl_count.cget("text") == "23 pendientes"
+        assert list(app.waiting_lane._group_rows[1][4]) == [10, 2, *range(11, 31)]
+        assert len(app.waiting_lane._group_rows[1][4]) == 22
+        app.root.update_idletasks()
+        assert app.waiting_lane._canvas.cget("scrollregion")
+        assert app.waiting_lane._scrollbar.winfo_ismapped()
+        large_scroll_region = app.waiting_lane._canvas.cget("scrollregion")
 
         # When vehicle 10 enters, it leaves the head of Puesto #1's queue.
         app._dispatch_event(
@@ -1087,11 +1111,13 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
                 waiting_time=0.5,
             )
         )
-        assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)]}
+        assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)], 2: [7]}
         assert app.waiting_lane._group_rows[1][0] is group_row
-        assert len(app.waiting_lane._items_container.winfo_children()) == 2
+        assert len(app.waiting_lane._items_container.winfo_children()) == 3
+        assert list(app.waiting_lane._group_rows[1][4]) == [2, *range(11, 31)]
+        assert app.waiting_lane._group_rows[1][4][2].cget("bg") == "#78350f"
 
-        # When vehicle 5 is cancelled, Puesto #2 group disappears
+        # Cancelling vehicle 5, which was never waiting, leaves the view unchanged.
         app._dispatch_event(
             event(
                 "VEHICLE_CANCELLED",
@@ -1101,8 +1127,204 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
                 reason="STOP_REQUESTED",
             )
         )
+        assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)], 2: [7]}
+        assert app.card_waiting._lbl_value.cget("text") == "22"
+        app._dispatch_event(
+            event("VEHICLE_CANCELLED", 7, plate="CCC-007", authorized_space_id=1,
+                  reason="STOP_REQUESTED")
+        )
         assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)]}
-        assert app.card_waiting._lbl_value.cget("text") == "21"
+        assert app.waiting_lane._group_rows[2][0].winfo_manager() == ""
+        assert app.waiting_lane._lbl_count.cget("text") == "21 pendientes"
+        for vehicle_id in [2, *range(11, 31)]:
+            app._dispatch_event(event(
+                "VEHICLE_CANCELLED", vehicle_id, plate=f"Q-{vehicle_id}",
+                authorized_space_id=0, reason="STOP_REQUESTED",
+            ))
+        app.root.update_idletasks()
+        assert app.waiting_lane._lbl_count.cget("text") == "0 pendientes"
+        assert app.waiting_lane._group_rows[1][4] == {}
+        assert not app.waiting_lane._scrollbar.winfo_ismapped()
+        assert app.waiting_lane._canvas.cget("scrollregion") != large_scroll_region
+
+        # A single unusually long valid plate still requires horizontal scrolling.
+        long_plate = "PLATE" * 24
+        app._dispatch_event(event(
+            "VEHICLE_CREATED", 99, plate=long_plate, authorized_space_id=0,
+        ))
+        app._dispatch_event(event(
+            "VEHICLE_WAITING", 99, plate=long_plate, authorized_space_id=0,
+        ))
+        app.root.update_idletasks()
+        assert app.waiting_lane._scrollbar.winfo_ismapped()
+        assert app.waiting_lane._canvas.bbox("all")[2] > app.waiting_lane._canvas.winfo_width()
+    finally:
+        app.root.destroy()
+
+
+def test_waiting_queue_updates_chips_incrementally_and_uniformly(monkeypatch) -> None:
+    app = ParkingApp(event_queue=Queue(), capacity=3)
+    try:
+        app._dispatch_event(event("SIMULATION_STARTED"))
+        for vehicle_id, plate, space_id in (
+            (1, "A", 0),
+            (2, "LONG-PLATE-12345678901234567890", 0),
+            (3, "B", 1),
+        ):
+            app._dispatch_event(event(
+                "VEHICLE_CREATED", vehicle_id, plate=plate,
+                authorized_space_id=space_id,
+            ))
+            app._dispatch_event(event(
+                "VEHICLE_WAITING", vehicle_id, plate=plate,
+                authorized_space_id=space_id,
+            ))
+
+        lane = app.waiting_lane
+        group_one = lane._group_rows[1]
+        group_two = lane._group_rows[2]
+        first_chip = group_one[4][1]
+        long_chip = group_one[4][2]
+        unaffected_chip = group_two[4][3]
+        app.root.update_idletasks()
+
+        assert first_chip.winfo_reqwidth() == unaffected_chip.winfo_reqwidth()
+        assert long_chip.winfo_reqwidth() > first_chip.winfo_reqwidth()
+        assert first_chip.winfo_reqheight() == long_chip.winfo_reqheight()
+        assert first_chip.cget("font") == long_chip.cget("font")
+        assert first_chip.cget("text") == "A"
+        assert long_chip.cget("text") == "LONG-PLATE-12345678901234567890"
+        assert first_chip.cget("bg") != long_chip.cget("bg")
+        normal_background = long_chip.cget("bg")
+        unaffected_geometry = (
+            unaffected_chip.winfo_reqwidth(), unaffected_chip.winfo_reqheight()
+        )
+
+        forgotten_chips = []
+        original_pack_forget = tk.Pack.pack_forget
+
+        def record_pack_forget(widget):
+            if widget in {first_chip, long_chip, unaffected_chip}:
+                forgotten_chips.append(widget)
+            return original_pack_forget(widget)
+
+        monkeypatch.setattr(tk.Pack, "pack_forget", record_pack_forget)
+
+        # A short append to space 1 must not unmap/repack chips in either group.
+        app._dispatch_event(event("VEHICLE_CREATED", 4, plate="C", authorized_space_id=0))
+        app._dispatch_event(event("VEHICLE_WAITING", 4, plate="C", authorized_space_id=0))
+        assert not forgotten_chips
+        assert lane._group_rows[1][4][1] is first_chip
+        assert lane._group_rows[1][4][2] is long_chip
+        assert lane._group_rows[2][4][3] is unaffected_chip
+        assert (unaffected_chip.winfo_reqwidth(), unaffected_chip.winfo_reqheight()) == unaffected_geometry
+        assert list(lane._group_rows[1][4]) == [1, 2, 4]
+        assert lane._group_rows[1][2].cget("text") == "3 en espera"
+
+        # Removing the FIFO head promotes, but does not recreate, the next chip.
+        app._dispatch_event(event(
+            "VEHICLE_ENTERED", 1, space_id=0, plate="A", authorized_space_id=0,
+        ))
+        assert list(lane._group_rows[1][4]) == [2, 4]
+        assert lane._group_rows[1][4][2] is long_chip
+        assert long_chip.cget("bg") != normal_background
+
+        # Remove an intermediate request, then the tail; retain the other chip.
+        app._dispatch_event(event(
+            "VEHICLE_CREATED", 5, plate="D", authorized_space_id=0,
+        ))
+        app._dispatch_event(event(
+            "VEHICLE_WAITING", 5, plate="D", authorized_space_id=0,
+        ))
+        tail_chip = lane._group_rows[1][4][5]
+        app._dispatch_event(event(
+            "VEHICLE_CANCELLED", 4, plate="C", authorized_space_id=0,
+            reason="STOP_REQUESTED",
+        ))
+        assert list(lane._group_rows[1][4]) == [2, 5]
+        assert lane._group_rows[1][4][5] is tail_chip
+        app._dispatch_event(event(
+            "VEHICLE_CANCELLED", 5, plate="D", authorized_space_id=0,
+            reason="STOP_REQUESTED",
+        ))
+        assert list(lane._group_rows[1][4]) == [2]
+        assert lane._group_rows[1][4][2] is long_chip
+        assert lane._group_rows[1][2].cget("text") == "1 en espera"
+        assert lane._lbl_count.cget("text") == "2 pendientes"
+        assert not forgotten_chips
+    finally:
+        app.root.destroy()
+
+
+def test_waiting_queue_sizes_exceptional_chips_without_resizing_existing_groups() -> None:
+    app = ParkingApp(event_queue=Queue(), capacity=3)
+    try:
+        app._dispatch_event(event("SIMULATION_STARTED"))
+        for vehicle_id, plate, space_id in (
+            (1, "PIA-160", 0),
+            (2, "IPZ-354", 1),
+        ):
+            app._dispatch_event(event(
+                "VEHICLE_CREATED", vehicle_id, plate=plate,
+                authorized_space_id=space_id,
+            ))
+            app._dispatch_event(event(
+                "VEHICLE_WAITING", vehicle_id, plate=plate,
+                authorized_space_id=space_id,
+            ))
+
+        lane = app.waiting_lane
+        first_chip = lane._group_rows[1][4][1]
+        second_chip = lane._group_rows[2][4][2]
+        app.root.update_idletasks()
+        common_dimensions = (first_chip.winfo_reqwidth(), first_chip.winfo_reqheight())
+        assert (second_chip.winfo_reqwidth(), second_chip.winfo_reqheight()) == common_dimensions
+
+        # Adding the third scenario plate may not resize the first two chips,
+        # even though they belong to different authorized spaces.
+        app._dispatch_event(event("VEHICLE_CREATED", 3, plate="HVG-983", authorized_space_id=2))
+        app._dispatch_event(event("VEHICLE_WAITING", 3, plate="HVG-983", authorized_space_id=2))
+        app.root.update_idletasks()
+        third_chip = lane._group_rows[3][4][3]
+        assert first_chip is lane._group_rows[1][4][1]
+        assert second_chip is lane._group_rows[2][4][2]
+        assert (first_chip.winfo_reqwidth(), first_chip.winfo_reqheight()) == common_dimensions
+        assert (second_chip.winfo_reqwidth(), second_chip.winfo_reqheight()) == common_dimensions
+        assert (third_chip.winfo_reqwidth(), third_chip.winfo_reqheight()) == common_dimensions
+        assert first_chip.cget("width") == second_chip.cget("width") == third_chip.cget("width")
+
+        before_long_plate = {
+            chip: (chip.winfo_reqwidth(), chip.winfo_reqheight(), chip.winfo_geometry())
+            for chip in (first_chip, second_chip, third_chip)
+        }
+        exceptional_plate = "X" * 60
+        app._dispatch_event(event(
+            "VEHICLE_CREATED", 4, plate=exceptional_plate, authorized_space_id=2,
+        ))
+        app._dispatch_event(event(
+            "VEHICLE_WAITING", 4, plate=exceptional_plate, authorized_space_id=2,
+        ))
+        app.root.update_idletasks()
+        exceptional_chip = lane._group_rows[3][4][4]
+        exceptional_background = exceptional_chip.cget("bg")
+        assert exceptional_chip.cget("text") == exceptional_plate
+        assert exceptional_chip.winfo_reqwidth() > common_dimensions[0]
+        assert all(
+            (chip.winfo_reqwidth(), chip.winfo_reqheight(), chip.winfo_geometry()) == dimensions
+            for chip, dimensions in before_long_plate.items()
+        )
+        assert lane._scrollbar.winfo_ismapped()
+
+        # FIFO removal still promotes the next chip without changing its size.
+        app._dispatch_event(event(
+            "VEHICLE_ENTERED", 3, plate="HVG-983", space_id=2,
+            authorized_space_id=2,
+        ))
+        app.root.update_idletasks()
+        assert lane.grouped_pending()[3] == [4]
+        assert exceptional_chip is lane._group_rows[3][4][4]
+        assert exceptional_chip.cget("bg") != exceptional_background
+        assert lane._lbl_count.cget("text") == "3 pendientes"
     finally:
         app.root.destroy()
 
