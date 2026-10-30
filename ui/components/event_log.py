@@ -64,6 +64,7 @@ class EventLogWidget(tk.Frame):
         self.max_lines = max_lines
         self.line_count = 0
         self._entries: deque[dict[str, Any]] = deque()
+        self._font_size = tk.IntVar(master=self, value=13)
 
         # Header with title, audit note, and "Limpiar vista" button
         header = tk.Frame(self, bg=COLOR_BG_CARD)
@@ -90,6 +91,19 @@ class EventLogWidget(tk.Frame):
             anchor="w",
         )
         self._lbl_audit_note.pack(anchor="w")
+
+        font_control = tk.Frame(header, bg=COLOR_BG_CARD)
+        font_control.pack(side="right", padx=(0, 8))
+        tk.Label(
+            font_control, text="Fuente:", bg=COLOR_BG_CARD, fg=COLOR_TEXT_MUTED,
+            font=(font_family(self), 8),
+        ).pack(side="left", padx=(0, 4))
+        self._combo_font_size = ttk.Combobox(
+            font_control, textvariable=self._font_size, values=(10, 12, 13, 14),
+            state="readonly", width=3, font=(font_family(self), 8),
+        )
+        self._combo_font_size.pack(side="left")
+        self._combo_font_size.bind("<<ComboboxSelected>>", self._apply_font_size)
 
         self._btn_clear = tk.Button(
             header,
@@ -202,13 +216,14 @@ class EventLogWidget(tk.Frame):
             bg=COLOR_LOG_BG,
             fg=COLOR_TEXT_PRIMARY,
             insertbackground=COLOR_TEXT_PRIMARY,
-            font=(font_family(self, fixed=True), 9),
+            font=(font_family(self, fixed=True), 13),
             wrap="word",
             state="disabled",
             yscrollcommand=self._scrollbar.set,
             relief="flat",
             padx=8,
             pady=8,
+            spacing1=2,
         )
         self._text.pack(side="left", fill="both", expand=True)
         self._scrollbar.config(command=self._text.yview)
@@ -218,15 +233,15 @@ class EventLogWidget(tk.Frame):
         self._text.tag_config("CREATED", foreground="#cbd5e1")
         self._text.tag_config("WAITING", foreground=COLOR_WAITING)
         self._text.tag_config("ENTERED", foreground=COLOR_AVAILABLE)
-        self._text.tag_config("EXITED", foreground="#c084fc")
-        self._text.tag_config("FINISHED", foreground=COLOR_INFO)
+        self._text.tag_config("EXITED", foreground=COLOR_INFO)
+        self._text.tag_config("FINISHED", foreground=COLOR_TEXT_MUTED)
         self._text.tag_config("REJECTED", foreground=COLOR_OCCUPIED)
         self._text.tag_config("CANCELLED", foreground="#fb923c")
         self._text.tag_config(
-            "ERROR", foreground=COLOR_OCCUPIED, font=(font_family(self, fixed=True), 9, "bold")
+            "ERROR", foreground=COLOR_OCCUPIED, font=(font_family(self, fixed=True), 13, "bold")
         )
         self._text.tag_config(
-            "SYSTEM", foreground="#38bdf8", font=(font_family(self, fixed=True), 9, "bold")
+            "SYSTEM", foreground=COLOR_INFO, font=(font_family(self, fixed=True), 13, "bold")
         )
         self._text.tag_config("MSG", foreground=COLOR_TEXT_PRIMARY)
 
@@ -267,6 +282,14 @@ class EventLogWidget(tk.Frame):
         self._text.insert("end", f"[{entry['timestamp_str']}] ", "TIME")
         self._text.insert("end", f"[{entry['event_type']}] ", type_tag)
         self._text.insert("end", f"{entry['message']}\n", "MSG")
+
+    def _apply_font_size(self, _event=None) -> None:
+        """Apply the selected size to existing and subsequently rendered log text."""
+        size = int(self._font_size.get())
+        fixed = font_family(self, fixed=True)
+        self._text.config(font=(fixed, size))
+        for tag in ("ERROR", "SYSTEM"):
+            self._text.tag_config(tag, font=(fixed, size, "bold"))
 
     def log(
         self,

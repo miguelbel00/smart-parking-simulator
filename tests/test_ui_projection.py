@@ -1515,6 +1515,32 @@ def test_event_log_filters_preserve_records_and_clear_view_note() -> None:
         app.root.destroy()
 
 
+def test_event_log_font_size_updates_existing_and_future_entries_without_losing_tags() -> None:
+    from tkinter import font as tkfont
+
+    app = ParkingApp(event_queue=Queue(), capacity=5)
+    try:
+        log = app.event_log
+        log.log("VEHICLE_FINISHED", "#1 terminó", "12:00:00", vehicle_id=1)
+        assert tkfont.Font(root=app.root, font=log._text.cget("font")).actual("size") == 13
+        assert log._text.tag_cget("FINISHED", "foreground") == "#94a3b8"
+
+        for size in (10, 12, 14, 13):
+            log._font_size.set(size)
+            log._apply_font_size()
+            assert tkfont.Font(root=app.root, font=log._text.cget("font")).actual("size") == size
+            assert log.visible_lines() == ["[12:00:00] [VEHICLE_FINISHED] #1 terminó"]
+            assert log._text.tag_cget("FINISHED", "foreground") == "#94a3b8"
+
+        log.log("VEHICLE_ENTERED", "#2 ingresó", "12:00:01", vehicle_id=2)
+        assert len(log.visible_lines()) == 2
+        assert tkfont.Font(root=app.root, font=log._text.cget("font")).actual("size") == 13
+        log.clear()
+        assert log.visible_lines() == []
+    finally:
+        app.root.destroy()
+
+
 def test_persistent_summary_warning_architecture_footer_and_canonical_recovery() -> None:
     app = ParkingApp(event_queue=Queue(), capacity=5)
     try:
