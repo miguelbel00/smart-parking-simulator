@@ -842,10 +842,14 @@ def test_scenario_selector_uses_idle_gate_and_resizes_for_selected_run() -> None
         )
         assert app._scenario_var.get() == "Control de acceso · 5 puestos"
         assert selected == ["authorization_rejections"]
+        assert len(app.waiting_lane._group_rows) == 5
+        five_row = app.waiting_lane._group_rows[1][0]
 
         app.scenario_selector.current(1)
         app._handle_scenario_selection()
         assert selected == ["authorization_rejections", "normal_entry_and_exit"]
+        assert len(app.waiting_lane._group_rows) == 1
+        assert app.waiting_lane._group_rows[1][0] is five_row
 
         app._start_simulation()
         assert str(app.scenario_selector.cget("state")) == "disabled"
@@ -853,6 +857,7 @@ def test_scenario_selector_uses_idle_gate_and_resizes_for_selected_run() -> None
         assert app.capacity == 1
         assert len(app.parking_grid.slots) == 1
         assert app.metrics_summary.capacity == 1
+        assert app.waiting_lane._group_rows[1][0] is five_row
 
         adapter.active = False
         adapter.drained = True
@@ -1029,6 +1034,15 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
     app = ParkingApp(event_queue=Queue(), capacity=5)
     try:
         app._dispatch_event(event("SIMULATION_STARTED"))
+        initial_rows = {
+            slot: app.waiting_lane._group_rows[slot][0]
+            for slot in range(1, 6)
+        }
+        assert all(row.winfo_manager() == "grid" for row in initial_rows.values())
+        for slot in range(1, 6):
+            row_data = app.waiting_lane._group_rows[slot]
+            assert row_data[2].cget("text") == "0 en espera"
+            assert row_data[7].cget("text") == "Sin solicitudes"
         # Vehicle 10 is accepted but has not yet been observed waiting.
         app._dispatch_event(
             event("VEHICLE_CREATED", 10, plate="BBB-010", authorized_space_id=0)
@@ -1070,8 +1084,10 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
 
         group_row = app.waiting_lane._group_rows[1][0]
         assert app.waiting_lane._group_rows[1][0] is group_row
-        assert len(app.waiting_lane._items_container.winfo_children()) == 3
+        assert len(app.waiting_lane._items_container.winfo_children()) == 6
         assert app.waiting_lane._group_rows[1][2].cget("text") == "2 en espera"
+        assert app.waiting_lane._group_rows[1][7].cget("text") == ""
+        assert app.waiting_lane._group_rows[1][1].cget("fg") == "#38bdf8"
         assert [label.cget("text") for label in app.waiting_lane._group_rows[1][4].values()] == [
             "BBB-010", "DDD-002"
         ]
@@ -1088,9 +1104,9 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
                 event("VEHICLE_WAITING", vehicle_id, plate=f"Q-{vehicle_id}",
                       authorized_space_id=0)
             )
-        assert len(app.waiting_lane._group_rows) == 2
+        assert len(app.waiting_lane._group_rows) == 5
         assert app.waiting_lane._group_rows[1][0] is group_row
-        assert len(app.waiting_lane._items_container.winfo_children()) == 3
+        assert len(app.waiting_lane._items_container.winfo_children()) == 6
         assert app.waiting_lane._group_rows[1][2].cget("text") == "22 en espera"
         assert app.waiting_lane._lbl_count.cget("text") == "23 pendientes"
         assert list(app.waiting_lane._group_rows[1][4]) == [10, 2, *range(11, 31)]
@@ -1113,7 +1129,7 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
         )
         assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)], 2: [7]}
         assert app.waiting_lane._group_rows[1][0] is group_row
-        assert len(app.waiting_lane._items_container.winfo_children()) == 3
+        assert len(app.waiting_lane._items_container.winfo_children()) == 6
         assert list(app.waiting_lane._group_rows[1][4]) == [2, *range(11, 31)]
         assert app.waiting_lane._group_rows[1][4][2].cget("bg") == "#78350f"
 
@@ -1134,7 +1150,7 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
                   reason="STOP_REQUESTED")
         )
         assert app.waiting_lane.grouped_pending() == {1: [2, *range(11, 31)]}
-        assert app.waiting_lane._group_rows[2][0].winfo_manager() == ""
+        assert app.waiting_lane._group_rows[2][0].winfo_manager() == "grid"
         assert app.waiting_lane._lbl_count.cget("text") == "21 pendientes"
         for vehicle_id in [2, *range(11, 31)]:
             app._dispatch_event(event(
@@ -1144,8 +1160,20 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
         app.root.update_idletasks()
         assert app.waiting_lane._lbl_count.cget("text") == "0 pendientes"
         assert app.waiting_lane._group_rows[1][4] == {}
-        assert not app.waiting_lane._scrollbar.winfo_ismapped()
+        for slot, row in initial_rows.items():
+            assert app.waiting_lane._group_rows[slot][0] is row
+            assert app.waiting_lane._group_rows[slot][2].cget("text") == "0 en espera"
+            assert app.waiting_lane._group_rows[slot][7].cget("text") == "Sin solicitudes"
         assert app.waiting_lane._canvas.cget("scrollregion") != large_scroll_region
+
+        app._dispatch_event(event("VEHICLE_CREATED", 98, plate="NO-SLOT"))
+        app._dispatch_event(event("VEHICLE_WAITING", 98, plate="NO-SLOT"))
+        assert app.waiting_lane.grouped_pending() == {None: [98]}
+        assert app.waiting_lane._group_rows[None][0].winfo_manager() == "grid"
+        app._dispatch_event(event(
+            "VEHICLE_CANCELLED", 98, plate="NO-SLOT", reason="STOP_REQUESTED",
+        ))
+        assert app.waiting_lane._group_rows[None][0].winfo_manager() == ""
 
         # A single unusually long valid plate still requires horizontal scrolling.
         long_plate = "PLATE" * 24
@@ -1158,6 +1186,31 @@ def test_pending_requests_grouped_by_authorized_slot_preserve_acceptance_order()
         app.root.update_idletasks()
         assert app.waiting_lane._scrollbar.winfo_ismapped()
         assert app.waiting_lane._canvas.bbox("all")[2] > app.waiting_lane._canvas.winfo_width()
+
+        persistent_rows = {
+            slot: app.waiting_lane._group_rows[slot][0]
+            for slot in range(1, 6)
+        }
+        app._dispatch_event(event("SIMULATION_STARTED"))
+        assert app.waiting_lane.grouped_pending() == {}
+        for slot, row in persistent_rows.items():
+            assert app.waiting_lane._group_rows[slot][0] is row
+            assert app.waiting_lane._group_rows[slot][4] == {}
+            assert app.waiting_lane._group_rows[slot][7].cget("text") == "Sin solicitudes"
+    finally:
+        app.root.destroy()
+
+
+def test_waiting_queue_scrolls_many_permanent_empty_rows() -> None:
+    app = ParkingApp(event_queue=Queue(), capacity=30)
+    try:
+        app.root.update_idletasks()
+        assert len(app.waiting_lane._group_rows) == 30
+        assert all(
+            row_data[0].winfo_manager() == "grid"
+            for row_data in app.waiting_lane._group_rows.values()
+        )
+        assert app.waiting_lane._vscroll.winfo_ismapped()
     finally:
         app.root.destroy()
 

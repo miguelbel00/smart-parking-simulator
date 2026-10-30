@@ -165,7 +165,9 @@ class ParkingApp:
         self.parking_grid.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         self.parking_grid.setup_slots(self.capacity)
         self._apply_selected_authorizations()
-        self.waiting_lane = WaitingQueueWidget(simulation_content)
+        self.waiting_lane = WaitingQueueWidget(
+            simulation_content, capacity=self._selected_scenario_capacity
+        )
         self.waiting_lane.pack_propagate(False)
         self.waiting_lane.grid(row=0, column=1, sticky="nsew", pady=5)
         tk.Button(
@@ -262,6 +264,9 @@ class ParkingApp:
         if self._on_scenario_selected_callback is not None:
             self._on_scenario_selected_callback(name)
         self._apply_selected_authorizations()
+        waiting_lane = getattr(self, "waiting_lane", None)
+        if waiting_lane is not None and hasattr(waiting_lane, "set_capacity"):
+            waiting_lane.set_capacity(self._selected_scenario_capacity)
 
     def _apply_selected_authorizations(self) -> None:
         grid = getattr(self, "parking_grid", None)
@@ -278,6 +283,9 @@ class ParkingApp:
     def _apply_selected_capacity(self) -> None:
         """Resize the display to the selected run only after Core starts it."""
         capacity = getattr(self, "_selected_scenario_capacity", self.capacity)
+        waiting_lane = getattr(self, "waiting_lane", None)
+        if waiting_lane is not None and hasattr(waiting_lane, "set_capacity"):
+            waiting_lane.set_capacity(capacity)
         if capacity == self.capacity:
             return
         self.capacity = capacity

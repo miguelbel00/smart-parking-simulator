@@ -29,7 +29,7 @@ class WaitingQueueWidget(tk.Frame):
     admission or replacing Core logic.
     """
 
-    def __init__(self, parent: tk.Widget, **kwargs) -> None:
+    def __init__(self, parent: tk.Widget, capacity: int = 0, **kwargs) -> None:
         super().__init__(
             parent,
             bg=COLOR_BG_CARD,
@@ -43,11 +43,13 @@ class WaitingQueueWidget(tk.Frame):
         self._plates: dict[int, str] = {}
         self._authorized_slots: dict[int, int | None] = {}
         self._states: dict[int, str] = {}
+        self._capacity = 0
         self._group_rows: dict[
             int | None,
             tuple[
                 tk.Frame, tk.Label, tk.Label, tk.Frame,
                 dict[int, tk.Label], dict[int, tk.Label], list[int],
+                tk.Label,
             ],
         ] = {}
         self._chip_font = tkfont.Font(
@@ -136,6 +138,20 @@ class WaitingQueueWidget(tk.Frame):
         )
         self._items_container.grid_columnconfigure(0, weight=1)
         self._lbl_empty.grid(row=0, column=0, sticky="w", pady=4)
+        self.set_capacity(capacity)
+
+    def set_capacity(self, capacity: int) -> None:
+        """Reconcile permanent numbered rows with the selected scenario capacity."""
+        if capacity < 0:
+            raise ValueError("capacity must be non-negative")
+        if capacity == self._capacity:
+            return
+        for slot_key in range(capacity + 1, self._capacity + 1):
+            row_data = self._group_rows.pop(slot_key, None)
+            if row_data is not None:
+                row_data[0].destroy()
+        self._capacity = capacity
+        self._refresh()
 
     def _on_items_configure(self, _event: tk.Event | None = None) -> None:
         """Update canvas scrollregion and toggle scrollbars when content overflows."""
@@ -151,7 +167,7 @@ class WaitingQueueWidget(tk.Frame):
                     self._scrollbar.pack(side="bottom", fill="x", pady=(2, 0))
             elif self._scrollbar.winfo_ismapped():
                 self._scrollbar.pack_forget()
-            if content_height > canvas_height and len(self._vehicles) > 1:
+            if content_height > canvas_height:
                 if not self._vscroll.winfo_ismapped():
                     self._vscroll.pack(side="right", fill="y", padx=(2, 0))
             elif self._vscroll.winfo_ismapped():
@@ -234,12 +250,18 @@ class WaitingQueueWidget(tk.Frame):
             self._lbl_count.config(text=total_text)
 
         groups = self.grouped_pending()
+        # Numbered rows exist independently of requests; the auxiliary None row
+        # remains demand-driven and is shown only while such requests exist.
+        groups = {slot: groups.get(slot, []) for slot in range(1, self._capacity + 1)} | {
+            key: value for key, value in groups.items()
+            if key is None or key < 1 or key > self._capacity
+        }
         font_unit = max(self._chip_font.measure("0"), 1)
 
         for slot_key, row_data in self._group_rows.items():
             if slot_key in groups:
                 continue
-            row, _, _, _, chips, separators, rendered_order = row_data
+            row, _, _, _, chips, separators, rendered_order, _ = row_data
             for chip in chips.values():
                 chip.destroy()
             chips.clear()
@@ -247,7 +269,7 @@ class WaitingQueueWidget(tk.Frame):
                 separator.destroy()
             separators.clear()
             rendered_order.clear()
-            if row.winfo_manager() == "grid":
+            if slot_key is None and row.winfo_manager() == "grid":
                 row.grid_remove()
 
         if not groups:
@@ -260,7 +282,7 @@ class WaitingQueueWidget(tk.Frame):
 
         if self._lbl_empty.winfo_manager() == "grid":
             self._lbl_empty.grid_remove()
-        # Sort group rows by slot number (1..N, then None) while keeping acceptance order inside each group
+        # Sort rows by slot number, then the auxiliary None row.
         sorted_slots = sorted(
             groups.keys(), key=lambda s: (s is None, s if s is not None else 0)
         )
@@ -288,23 +310,35 @@ class WaitingQueueWidget(tk.Frame):
                     font=(font_family(self), 9, "bold"),
                 )
                 count_label.pack(side="left", padx=(0, 8))
+                empty_label = tk.Label(
+                    group_row, text="", anchor="w", bg=COLOR_BG_CARD,
+                    fg=COLOR_TEXT_MUTED, font=(font_family(self), 9),
+                )
+                empty_label.pack(side="left", padx=(0, 8))
                 plates_container = tk.Frame(group_row, bg=COLOR_BG_CARD)
                 plates_container.pack(side="left", fill="x", expand=True)
                 row_data = (
-                    group_row, slot_label, count_label, plates_container, {}, {}, []
+                    group_row, slot_label, count_label, plates_container, {}, {}, [],
+                    empty_label,
                 )
                 self._group_rows[slot_key] = row_data
 
             (
                 group_row, slot_label, count_label, plates_container,
-                chips, separators, rendered_order,
+                chips, separators, rendered_order, empty_label,
             ) = row_data
             slot_text = f"Espacio #{slot_key}" if slot_key is not None else "Espacio s/a"
-            if slot_label.cget("text") != slot_text:
-                slot_label.config(text=slot_text)
+            active = bool(vids)
+            slot_fg = COLOR_INFO if active else COLOR_TEXT_MUTED
+            if slot_label.cget("text") != slot_text or slot_label.cget("fg") != slot_fg:
+                slot_label.config(text=slot_text, fg=slot_fg)
             count_text = f"{len(vids)} en espera"
-            if count_label.cget("text") != count_text:
-                count_label.config(text=count_text)
+            count_fg = COLOR_WAITING if active else COLOR_TEXT_MUTED
+            if count_label.cget("text") != count_text or count_label.cget("fg") != count_fg:
+                count_label.config(text=count_text, fg=count_fg)
+            empty_text = "" if active else "Sin solicitudes"
+            if empty_label.cget("text") != empty_text:
+                empty_label.config(text=empty_text)
 
             old_order = list(rendered_order)
             old_head = old_order[0] if old_order else None
@@ -386,9 +420,10 @@ class WaitingQueueWidget(tk.Frame):
                     chips[vehicle_id].pack(side="left", padx=(0, 2))
 
             rendered_order[:] = vids
+            target_row = slot_key - 1 if slot_key is not None else self._capacity
             if (group_row.winfo_manager() != "grid"
-                    or group_row.grid_info().get("row") != row_index):
-                group_row.grid(row=row_index, column=0, sticky="ew", pady=5)
+                    or group_row.grid_info().get("row") != target_row):
+                group_row.grid(row=target_row, column=0, sticky="ew", pady=5)
 
         self._on_items_configure()
 
